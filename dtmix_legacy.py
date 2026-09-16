@@ -1,9 +1,30 @@
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
+# Tkinter is optional in web/server mode (Render has no system Tk package).
+try:
+    from tkinter import filedialog, messagebox
+except (ImportError, ModuleNotFoundError):
+    class _FileDialogStub:
+        @staticmethod
+        def askopenfilename(*args, **kwargs): return ""
+        @staticmethod
+        def askdirectory(*args, **kwargs): return ""
+    class _MessageBoxStub:
+        @staticmethod
+        def showerror(*args, **kwargs): return None
+        @staticmethod
+        def showwarning(*args, **kwargs): return None
+        @staticmethod
+        def showinfo(*args, **kwargs): return None
+    filedialog = _FileDialogStub()
+    messagebox = _MessageBoxStub()
+
 import docx, random, copy, re, os, csv, traceback, sys, json, threading, gc
 import ctypes
-from PIL import Image, ImageTk, ImageDraw
-from PIL import Image, ImageTk, ImageDraw
+from PIL import Image, ImageDraw
+try:
+    from PIL import ImageTk
+except (ImportError, ModuleNotFoundError):
+    ImageTk = None
 from docx.document import Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P

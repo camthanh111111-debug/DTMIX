@@ -343,7 +343,7 @@ hr{{margin:.45rem 0!important}}
   text-align:center!important;
 }}
 
-/* Khu vực tải đề gốc nổi bật hơn */
+/* Khu vực tải đề gốc: nhỏ gọn, không viền; chỉ nền vùng upload */
 .upload-zone-title{{
   color:#0E5FA8;
   font-weight:900;
@@ -359,25 +359,35 @@ hr{{margin:.45rem 0!important}}
   margin-bottom:6px;
 }}
 [data-testid="stFileUploader"]{{
-  background:linear-gradient(135deg,#EAF5FF,#F4FAFF)!important;
-  border:2px solid #68AEEF!important;
-  border-radius:14px!important;
-  padding:7px!important;
-  box-shadow:0 5px 16px rgba(43,116,184,.12)!important;
+  width:52%!important;
+  max-width:560px!important;
+  min-width:360px!important;
+  margin:0 auto!important;
+  background:transparent!important;
+  border:0!important;
+  border-radius:0!important;
+  padding:0!important;
+  box-shadow:none!important;
 }}
 [data-testid="stFileUploaderDropzone"]{{
-  background:linear-gradient(135deg,#F7FBFF,#EAF5FF)!important;
-  border:2px dashed #4B9AE8!important;
-  border-radius:11px!important;
+  background:#E7F3FF!important;
+  border:0!important;
+  border-radius:10px!important;
+  box-shadow:none!important;
+  padding:.45rem .65rem!important;
 }}
 .file-pill{{
   display:block!important;
+  width:52%!important;
+  max-width:560px!important;
+  min-width:360px!important;
+  margin:4px auto 0!important;
   text-align:center!important;
-  background:#DDEFFF!important;
-  border:1px solid #89BEEE!important;
+  background:transparent!important;
+  border:0!important;
   color:#0E5FA8!important;
   font-weight:850!important;
-  padding:6px 10px!important;
+  padding:2px 5px!important;
 }}
 
 /* Trộn & xuất ngay sau phần tự động kiểm tra */
@@ -996,6 +1006,43 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
         return file_bytes, stats
 
 
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _build_exact_export_goc_preview(
+    file_bytes: bytes,
+    filename: str,
+    youngmix: bool,
+    header_json: str,
+) -> tuple[bytes, str]:
+    """
+    Tạo đúng De_Ma_GOC.docx bằng chính thuật toán xuất đề DTMIX.
+    Đây là nguồn chuẩn cho preview vì legacy export tô đỏ trực tiếp các
+    phương án có ans['is_true'] == True, đúng cùng dữ liệu dùng khi xuất đáp án.
+    """
+    temp_engine = None
+    try:
+        header = json.loads(header_json) if header_json else {}
+        temp_engine = DTMIXWebEngine(
+            file_bytes,
+            filename,
+            youngmix=bool(youngmix),
+            header=header,
+        )
+        result = temp_engine.mix(["111"])
+        goc_path = Path(result.output_dir) / "De_Ma_GOC.docx"
+        if not goc_path.exists():
+            return file_bytes, "Không tìm thấy De_Ma_GOC.docx."
+        return goc_path.read_bytes(), ""
+    except Exception as exc:
+        return file_bytes, f"Lỗi tạo De_Ma_GOC: {exc}"
+    finally:
+        if temp_engine is not None:
+            try:
+                temp_engine.close()
+            except Exception:
+                pass
+
+
 def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 920) -> None:
     """
     Trình xem DOCX chạy trực tiếp trong trình duyệt bằng docx-preview 0.4.0.
@@ -1005,33 +1052,20 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
       • Dùng toàn bộ chiều rộng vùng preview ~70%.
     Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
     """
-    # Xem trước = BẢN SAO của đề gốc, chỉ thêm màu đỏ cho đáp án đúng
-    # mà DTMIX đã nhận diện. File gốc engine.file_bytes hoàn toàn không bị sửa.
-    sig = hashlib.sha256(engine.file_bytes).hexdigest()
-    annotation_json = json.dumps(
-        build_answer_annotation_spec(engine),
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    preview_bytes, stats = _prepare_browser_preview_docx(
+    # Xem trước dùng đúng De_Ma_GOC.docx do thuật toán DTMIX xuất.
+    # Không còn tự map A/B/C/D bằng giao diện, nên đáp án đỏ khớp file xuất thực tế.
+    header_json = json.dumps(header_values(), ensure_ascii=False, sort_keys=True)
+    preview_bytes, preview_error = _build_exact_export_goc_preview(
         engine.file_bytes,
-        sig,
-        annotation_json,
+        engine.filename,
+        engine.youngmix,
+        header_json,
     )
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
-
-    conversion_note = (
-        f" • đã tô đỏ {stats.get('answer_marks', 0)} đáp án đúng theo kết quả phân tích DTMIX"
-    )
-    if stats.get("wmf_emf_total", 0):
-        if stats.get("converted_wmf_emf", 0):
-            conversion_note += (
-                f" • chuyển {stats['converted_wmf_emf']}/"
-                f"{stats['wmf_emf_total']} WMF/EMF sang PNG để xem trước"
-            )
-        else:
-            conversion_note += f" • có {stats['wmf_emf_total']} WMF/EMF legacy"
+    conversion_note = " • nguồn: De_Ma_GOC do DTMIX xuất"
+    if preview_error:
+        conversion_note += " • " + preview_error
 
     html_doc = f"""
 <!doctype html>
@@ -1117,7 +1151,7 @@ function fitWidth(){{
       useBase64URL:true,
       ignoreLastRenderedPageBreak:false
    }});
-   document.getElementById('status').textContent='✓ Đề gốc + đáp án đúng tô đỏ{conversion_note}';
+   document.getElementById('status').textContent='✓ De_Ma_GOC: đáp án đỏ theo đúng thuật toán xuất DTMIX{conversion_note}';
    setTimeout(fitWidth,250);
  }}catch(e){{
    document.getElementById('status').textContent='Không dựng được DOCX trực tiếp.';
@@ -1176,21 +1210,21 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
     signature = hashlib.sha256(engine.file_bytes).hexdigest()
     with st.spinner("Đang dựng bản xem trước Word chính xác..."):
-        # Tạo BẢN SAO preview từ đề gốc và chỉ tô đỏ đáp án đúng.
-        annotation_json = json.dumps(
-            build_answer_annotation_spec(engine),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        annotated_bytes, _stats = _prepare_browser_preview_docx(
+        # PDF cũng dựng từ đúng De_Ma_GOC.docx do DTMIX xuất.
+        header_json = json.dumps(header_values(), ensure_ascii=False, sort_keys=True)
+        goc_bytes, goc_error = _build_exact_export_goc_preview(
             engine.file_bytes,
-            signature,
-            annotation_json,
+            engine.filename,
+            engine.youngmix,
+            header_json,
         )
         pdf_bytes, err = _docx_to_pdf_bytes(
-            annotated_bytes,
-            signature + "_answers_red",
+            goc_bytes,
+            signature + "_dtmix_goc",
         )
+        if goc_error and not err:
+            err = goc_error
+
 
     if pdf_bytes:
         # Lấy số trang nhẹ nhàng
@@ -2179,10 +2213,17 @@ if engine:
         flat = [g for p in parts for g in p.get("groups", [])]
         for i, yg in enumerate(ym_groups):
             sg = flat[i] if i < len(flat) else {"questions": [], "question_count": yg.get("question_count",0)}
-            qs = sg.get("questions", [])
-            total = int(yg.get("question_count", len(qs)))
-            valid = sum(1 for q in qs if q.get("valid_answer"))
-            missing = [_summary_question_label(q, j+1) for j,q in enumerate(qs) if not q.get("valid_answer")]
+            total = int(yg.get("question_count", 0))
+            qs_all = sg.get("questions", [])
+            qs = qs_all[:total] if total > 0 else qs_all
+            if total <= 0:
+                total = len(qs)
+            valid = min(total, sum(1 for q in qs if q.get("valid_answer")))
+            missing = [
+                _summary_question_label(q, j + 1)
+                for j, q in enumerate(qs)
+                if not q.get("valid_answer")
+            ]
             fixed_text = "Cố định" if (yg.get("is_fixed") or True) else "Có thể đổi vị trí"
             if missing:
                 status = f'<div class="analysis-card-bad">Thiếu đáp án: Câu {esc(", ".join(missing))}</div>'

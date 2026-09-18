@@ -213,13 +213,13 @@ hr{{border-color:#E7EDF4}}
 @media(max-width:1000px){{.hero-side{{display:none}}}}
 
 /* Dồn các khối Streamlit lên gần nhau hơn */
-[data-testid="stVerticalBlock"]{gap:.48rem!important}
-[data-testid="stHorizontalBlock"]{gap:.65rem!important}
-[data-testid="stFileUploader"]{margin-bottom:.1rem!important}
-[data-testid="stFileUploaderDropzone"]{padding:.45rem .7rem!important;min-height:72px!important}
-[data-testid="stMetric"]{padding:7px 10px!important}
-.stElementContainer{margin-bottom:.05rem!important}
-hr{margin:.45rem 0!important}
+[data-testid="stVerticalBlock"]{{gap:.48rem!important}}
+[data-testid="stHorizontalBlock"]{{gap:.65rem!important}}
+[data-testid="stFileUploader"]{{margin-bottom:.1rem!important}}
+[data-testid="stFileUploaderDropzone"]{{padding:.45rem .7rem!important;min-height:72px!important}}
+[data-testid="stMetric"]{{padding:7px 10px!important}}
+.stElementContainer{{margin-bottom:.05rem!important}}
+hr{{margin:.45rem 0!important}}
 
 
 /* Cấu hình trộn tự động luôn mở, hiển thị theo hàng ngang */

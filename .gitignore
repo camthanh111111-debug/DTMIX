@@ -1,6 +1,6 @@
 __pycache__/
-.venv/
-uploads/*
-outputs/*
-!uploads/.gitkeep
-!outputs/.gitkeep
+*.pyc
+.streamlit/secrets.toml
+outputs/
+uploads/
+*.zip

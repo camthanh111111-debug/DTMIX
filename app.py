@@ -92,29 +92,27 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
     var(--bg);
   color:var(--ink);
 }}
-.block-container{{max-width:none;width:100%;padding:.35rem 1.1rem 2.2rem}}
+.block-container{{max-width:none;width:100%;padding:.18rem 1.0rem 1.4rem}}
 #MainMenu,footer,header{{visibility:hidden}}
 
 /* Hero sáng, không nền đen */
 .hero{{
   background:linear-gradient(120deg,var(--hero1),var(--hero2));
   border:1px solid color-mix(in srgb,var(--primary) 18%, white);
-  border-radius:16px;padding:11px 17px;color:var(--hero-text);
-  box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:10px;
+  border-radius:14px;padding:8px 15px;color:var(--hero-text);
+  box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:6px;
 }}
 .hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
 .hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
 .hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:25px}}
-.hero-title{{font-size:24px;font-weight:850;letter-spacing:-.3px;line-height:1}}
-.hero-sub{{font-size:12.5px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
-.hero-tags{{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}}
-.hero-tag{{font-size:10.8px;font-weight:760;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.62);border:1px solid rgba(255,255,255,.9);color:var(--hero-text)}}
+.hero-title{{font-size:25px;font-weight:850;letter-spacing:-.3px;line-height:1}}
+.hero-sub{{font-size:13.5px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
 .hero-side{{margin-left:auto;text-align:right;max-width:330px}}
-.hero-side b{{font-size:13px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:11px;margin-top:4px}}
+.hero-side b{{font-size:13px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:12px;margin-top:4px}}
 
 .sec{{display:flex;gap:10px;align-items:center;margin:14px 0 7px}}
 .sec-no{{width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--primary),var(--primary2));color:white;display:flex;align-items:center;justify-content:center;font-weight:850;box-shadow:0 5px 12px color-mix(in srgb,var(--primary) 24%, transparent)}}
-.sec-title{{font-size:19px;font-weight:820;color:#203044}} .sec-sub{{font-size:12px;color:var(--muted);margin-top:1px}}
+.sec-title{{font-size:19px;font-weight:820;color:#203044}} .sec-sub{{font-size:13px;color:var(--muted);margin-top:1px}}
 
 [data-testid="stVerticalBlockBorderWrapper"]{{
   border:1px solid var(--line)!important;border-radius:15px!important;background:rgba(255,255,255,.98);
@@ -132,18 +130,18 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
 .stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
 
 /* Chữ rõ hơn, không cắt label */
-[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:13.5px!important}}
+[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:14.5px!important}}
 [data-testid="stMarkdownContainer"] p{{line-height:1.48}}
 [data-testid="stToggle"] label{{width:100%!important}}
 [data-testid="stToggle"] label p{{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}}
-[data-baseweb="select"] *{{font-size:13.5px!important}}
+[data-baseweb="select"] *{{font-size:14.5px!important}}
 .stCaptionContainer{{color:#73859A!important}}
 div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
 
 /* Thanh công cụ trên cùng */
 .tool-card-title{{font-size:13.5px;font-weight:850;color:#173B65;margin-bottom:6px}}
-.top-hint{{font-size:11px;color:#6D8096;line-height:1.35;margin-top:5px}}
-.top-status{{font-size:11.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
+.top-hint{{font-size:12px;color:#6D8096;line-height:1.35;margin-top:5px}}
+.top-status{{font-size:12.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
 
 /* Thông tin đề dạng ngang */
 .exam-info{{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}}
@@ -156,51 +154,51 @@ div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
 .preview-shell{{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}}
 .preview-heading{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}}
 .preview-heading b{{font-size:16px;color:#143A66}}
-.preview-badge{{font-size:11px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
+.preview-badge{{font-size:12px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
 
 /* Right panel clarity */
 .control-title{{font-size:16px;font-weight:850;color:#173B65;margin:2px 0 8px}}
-.control-note{{font-size:11.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
+.control-note{{font-size:12.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
 .stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
 hr{{border-color:#E7EDF4}}
 
 .status-good{{background:var(--green-bg);border:1px solid #BFE5D6;color:#116B50;border-radius:11px;padding:9px 12px;font-weight:750}}
 .status-warn{{background:var(--amber-bg);border:1px solid #EED9AE;color:#955B00;border-radius:11px;padding:9px 12px;font-weight:750}}
 .status-bad{{background:var(--red-bg);border:1px solid #EFC5CB;color:#A53240;border-radius:11px;padding:9px 12px;font-weight:750}}
-.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:11.5px;font-weight:720}}
-.mini-help{{font-size:11.5px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:8px 10px;border-radius:9px;line-height:1.5}}
-.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:12.5px;gap:10px}}
+.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:12.5px;font-weight:720}}
+.mini-help{{font-size:12.5px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:6px 9px;border-radius:9px;line-height:1.5}}
+.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:13.5px;gap:10px}}
 .audit-row:last-child{{border-bottom:0}} .audit-ok{{color:#17785B;font-weight:800}} .audit-warn{{color:#A96A0B;font-weight:800}} .audit-bad{{color:#B93E4B;font-weight:800}}
 .g-badge{{display:inline-block;border-radius:7px;padding:3px 7px;font-size:10.8px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}}
 .g1{{background:#EDF8FF;color:#126A9A}} .g2{{background:#F2EEFF;color:#6743B1}} .g3{{background:#EAF8F2;color:#0B7A53}} .g0{{background:#F2F4F7;color:#536174}} .g4{{background:#FFF3E7;color:#A45B00}}
-.word-preview-note{{font-size:11.5px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
-.preview-toolbar{{font-size:11.5px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
+.word-preview-note{{font-size:12.5px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
+.preview-toolbar{{font-size:12.5px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
 .result-ok{{background:var(--green-bg);border:1px solid #BFE5D6;border-radius:11px;color:#116B50;padding:10px 12px;font-weight:750}}
-.footer{{text-align:center;color:#93A0AF;font-size:11px;margin-top:22px}}
+.footer{{text-align:center;color:#93A0AF;font-size:12px;margin-top:22px}}
 
 /* Tổng quan gọn - tối ưu màn hình máy tính ở 100% */
 .summary-compact{{
-  display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:8px;margin:8px 0 8px;
+  display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:7px;margin:5px 0 5px;
 }}
 .summary-chip{{
-  background:#FFFFFF;border:1px solid var(--line);border-radius:11px;padding:8px 11px;
-  box-shadow:0 2px 8px rgba(45,75,105,.035);min-height:58px;
+  background:#FFFFFF;border:1px solid var(--line);border-radius:11px;padding:6px 10px;
+  box-shadow:0 2px 8px rgba(45,75,105,.035);min-height:50px;
 }}
 .summary-chip .v{{font-size:22px;font-weight:850;color:var(--primary);line-height:1.05}}
-.summary-chip .l{{font-size:11.5px;font-weight:700;color:var(--muted);margin-top:4px}}
+.summary-chip .l{{font-size:12.5px;font-weight:700;color:var(--muted);margin-top:4px}}
 .part-status-grid{{
-  display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:8px;margin:7px 0 11px;
+  display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:7px;margin:5px 0 7px;
 }}
 .part-status-card{{
-  background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px;
-  display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:54px;
+  background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px 9px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:47px;
 }}
-.part-status-card .pn{{font-size:12.5px;font-weight:850;color:#203C5D}}
-.part-status-card .qc{{font-size:11.5px;color:#6D7F93;margin-top:2px}}
-.part-status-card .ans-ok{{font-size:11.5px;font-weight:850;color:#137A5A;text-align:right}}
-.part-status-card .ans-bad{{font-size:11.5px;font-weight:850;color:#B34A39;text-align:right}}
+.part-status-card .pn{{font-size:13.5px;font-weight:850;color:#203C5D}}
+.part-status-card .qc{{font-size:12.5px;color:#6D7F93;margin-top:2px}}
+.part-status-card .ans-ok{{font-size:12.5px;font-weight:850;color:#137A5A;text-align:right}}
+.part-status-card .ans-bad{{font-size:12.5px;font-weight:850;color:#B34A39;text-align:right}}
 .workspace-title{{
-  font-size:18px;font-weight:850;color:#193B61;margin:12px 0 7px;
+  font-size:19px;font-weight:850;color:#193B61;margin:7px 0 5px;
   display:flex;align-items:center;gap:8px;
 }}
 .workspace-title:before{{
@@ -213,6 +211,49 @@ hr{{border-color:#E7EDF4}}
 
 
 @media(max-width:1000px){{.hero-side{{display:none}}}}
+
+/* Dồn các khối Streamlit lên gần nhau hơn */
+[data-testid="stVerticalBlock"]{gap:.48rem!important}
+[data-testid="stHorizontalBlock"]{gap:.65rem!important}
+[data-testid="stFileUploader"]{margin-bottom:.1rem!important}
+[data-testid="stFileUploaderDropzone"]{padding:.45rem .7rem!important;min-height:72px!important}
+[data-testid="stMetric"]{padding:7px 10px!important}
+.stElementContainer{margin-bottom:.05rem!important}
+hr{margin:.45rem 0!important}
+
+
+/* Cấu hình trộn tự động luôn mở, hiển thị theo hàng ngang */
+.auto-config-wrap{{
+  margin:6px 0 10px;padding:10px 11px;border:1px solid #DCE7F3;
+  border-radius:13px;background:linear-gradient(180deg,#FFFFFF,#F8FBFF);
+}}
+.auto-config-head{{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px;
+}}
+.auto-config-title{{font-size:17px;font-weight:850;color:#173B65}}
+.auto-config-sub{{font-size:12px;color:#6D8096}}
+.config-part-label{{
+  font-size:13.5px;font-weight:850;color:#173B65;line-height:1.35;padding-top:3px;
+}}
+.config-part-meta{{font-size:12px;color:#70839A;margin-top:3px}}
+.config-divider{{height:1px;background:#E8EEF5;margin:7px 0}}
+/* Rà soát từng phần */
+.review-part{{
+  border:1px solid #DCE7F3;border-radius:11px;background:#FFFFFF;padding:9px 10px;margin:0 0 8px;
+}}
+.review-part-title{{font-size:13.5px;font-weight:850;color:#173B65}}
+.review-part-line{{font-size:12.5px;color:#40566F;margin-top:4px;line-height:1.45}}
+.review-ok{{color:#137A5A;font-weight:850}}
+.review-bad{{color:#B33E35;font-weight:850}}
+.review-missing{{
+  margin-top:6px;padding:6px 8px;border-radius:8px;background:#FFF4F1;
+  border:1px solid #F2D0C9;color:#A03B33;font-size:12px;font-weight:750;
+}}
+.review-allok{{
+  margin-top:6px;padding:6px 8px;border-radius:8px;background:#ECF8F2;
+  border:1px solid #C8ECDD;color:#137A5A;font-size:12px;font-weight:750;
+}}
+
 </style>
 
 <div class="hero">
@@ -221,10 +262,6 @@ hr{{border-color:#E7EDF4}}
    <div>
      <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700">V1.3</span></div>
      <div class="hero-sub">Trộn đề Word trực tuyến • rà soát đáp án • YoungMix g1/g2/g3 • xem trước giống Word</div>
-     <div class="hero-tags">
-       <span class="hero-tag">DOCX</span><span class="hero-tag">PHẦN I–IV</span>
-       <span class="hero-tag">g1 • g2 • g3</span><span class="hero-tag">Công thức • Hình ảnh • Bảng</span>
-     </div>
    </div>
  </div>
 </div>
@@ -371,11 +408,6 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str) -> tuple[by
             # Ghi nhớ format đáp án gốc trước khi tô đỏ số câu.
             marked_ranges = [(a, b) for _run, a, b, _txt, marked in infos if marked]
 
-            # Tô đỏ số câu.
-            for m in re.finditer(r"(?i)(?:#\s*)?(?:Câu|Question)\s*\d+\s*[\.\):]?", full):
-                _mark_overlapping_runs(infos, m.start(), m.end(), bold=True)
-                stats["question_marks"] += 1
-
             # Tô đỏ toàn bộ phương án mà DTMIX nhận diện là đúng.
             option_marks = list(re.finditer(
                 r"(?i)(?:^|[\s\u00A0\u200B\uFFFC])(#?[A-Ga-g][\.\)])",
@@ -491,7 +523,7 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
 
-    conversion_note = f" • đã đánh dấu {stats.get('question_marks', 0)} số câu, {stats.get('answer_marks', 0)} đáp án"
+    conversion_note = f" • đã tô đỏ {stats.get('answer_marks', 0)} đáp án đúng DTMIX nhận diện"
     if stats.get("wmf_emf_total", 0):
         if stats.get("converted_wmf_emf", 0):
             conversion_note = f" • đã chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} ảnh WMF/EMF sang PNG"
@@ -513,7 +545,7 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     gap:10px;background:rgba(255,255,255,.96);border-bottom:1px solid #DCE7F3;padding:9px 12px;
     box-shadow:0 3px 12px rgba(38,75,114,.06)
   }}
-  .status{{font-size:12px;font-weight:750;color:#176BCE}}
+  .status{{font-size:13px;font-weight:750;color:#176BCE}}
   .tools{{display:flex;gap:7px;align-items:center}}
   button{{border:1px solid #CFE0F1;background:#fff;color:#244B76;border-radius:8px;padding:6px 9px;font-weight:750;cursor:pointer}}
   button:hover{{background:#EEF6FF}}
@@ -1049,7 +1081,7 @@ def show_rich_preview(body_html: str, height: int = 760) -> None:
     .doc-p{margin:3px 0}.doc-p.center{text-align:center}.doc-p.right{text-align:right}.doc-p.justify{text-align:justify}
     .doc-answer{margin:2px 0 2px 14px;padding:2px 7px;border-radius:6px}.doc-answer.correct{background:#EAF8F2;color:#0B6D4B;border-left:3px solid #28A979;font-weight:700}
     .doc-img-wrap{text-align:center;margin:9px 0}.doc-img{max-width:96%;height:auto}.doc-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:16px}.doc-table td{border:1px solid #BBC7D5;padding:5px;vertical-align:top}
-    .doc-math{display:inline-block;vertical-align:middle;margin:0 2px}.doc-math math{font-size:1.08em}.media-chip{display:inline-block;background:#F3F0FF;color:#5B42A8;border-radius:999px;padding:2px 6px;font-size:11px}
+    .doc-math{display:inline-block;vertical-align:middle;margin:0 2px}.doc-math math{font-size:1.08em}.media-chip{display:inline-block;background:#F3F0FF;color:#5B42A8;border-radius:999px;padding:2px 6px;font-size:12px}
     sub,sup{line-height:0}
     </style>
     """
@@ -1550,8 +1582,6 @@ else:
 # ============================================================
 # 3 — WORKSPACE: PREVIEW + REVIEW/CONFIG
 # ============================================================
-st.markdown('<div class="workspace-title">Xem trước đề online • Rà soát • Cấu hình</div>', unsafe_allow_html=True)
-
 std_config = None
 ym_config = None
 
@@ -1562,83 +1592,197 @@ else:
     if not engine.youngmix:
         preview_rows = standard_preview_data(engine)
         issues = audit_standard(engine, preview_rows)
+
+        # ----------------------------------------------------
+        # CẤU HÌNH TRỘN TỰ ĐỘNG — luôn mở, nằm trên preview
+        # ----------------------------------------------------
+        st.markdown(
+            '<div class="auto-config-wrap">'
+            '<div class="auto-config-head">'
+            '<div><div class="auto-config-title">⚙️ Cấu hình trộn tự động</div>'
+            '<div class="auto-config-sub">Tất cả tùy chọn hiển thị trực tiếp theo hàng ngang, không thu gọn.</div></div>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        top_cfg_1, top_cfg_2 = st.columns([1.3, 4.7], gap="small")
+        with top_cfg_1:
+            keep_titles = st.checkbox(
+                "Giữ tiêu đề nhóm/mục",
+                value=False,
+                key="std_keep_titles_v4",
+            )
+        with top_cfg_2:
+            st.caption("Mỗi hàng: Phần/nhóm → Trộn câu → Số câu lấy → Giữ vị trí câu → Trộn vị trí nhóm")
+
+        std_groups = {}
+
+        # Header hàng cấu hình
+        h0, h1, h2, h3, h4 = st.columns([2.35, 1.0, 1.0, 1.35, 1.0], gap="small")
+        h0.markdown("**Phần / nhóm**")
+        h1.markdown("**Trộn câu**")
+        h2.markdown("**Số câu lấy**")
+        h3.markdown("**Giữ vị trí câu**")
+        h4.markdown("**Trộn nhóm**")
+
+        for part in summary["parts"]:
+            multi = len(part["groups"]) > 1
+            for g_idx, g in enumerate(part["groups"]):
+                key = f"s4_{g['p_idx']}_{g['m_idx']}"
+                with st.container(border=True):
+                    c0, c1, c2, c3, c4 = st.columns([2.35, 1.0, 1.0, 1.35, 1.0], gap="small")
+
+                    with c0:
+                        short_title = part["title"]
+                        if multi and g.get("title"):
+                            short_title = f'{part["title"]} · {g["title"]}'
+                        st.markdown(
+                            f'<div class="config-part-label">{esc(short_title)}</div>'
+                            f'<div class="config-part-meta">{g["question_count"]} câu'
+                            + (" · nhiều nhóm" if multi else "") + '</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    with c1:
+                        shuffle_q = st.toggle(
+                            "Trộn",
+                            value=(part["type"] != 4),
+                            key=key + "_sq",
+                            label_visibility="collapsed",
+                        )
+                        st.caption("Có" if shuffle_q else "Không")
+
+                    with c2:
+                        pick = st.number_input(
+                            "Số câu lấy",
+                            0,
+                            g["question_count"],
+                            g["question_count"],
+                            key=key + "_pick",
+                            label_visibility="collapsed",
+                        )
+
+                    with c3:
+                        fixed = st.text_input(
+                            "Giữ vị trí câu",
+                            value=", ".join(str(q["index"]) for q in g["questions"] if q["fixed"]),
+                            placeholder="VD: 1, 5",
+                            key=key + "_fix",
+                            label_visibility="collapsed",
+                        )
+
+                    with c4:
+                        shuffle_group = st.toggle(
+                            "Trộn nhóm",
+                            value=(multi and not g["is_fixed"] and part["type"] != 4),
+                            disabled=not multi,
+                            key=key + "_sg",
+                            label_visibility="collapsed",
+                        )
+                        st.caption("Có" if shuffle_group else ("Không" if multi else "1 nhóm"))
+
+                    std_groups[f"{g['p_idx']}:{g['m_idx']}"] = {
+                        "shuffle_questions": shuffle_q,
+                        "pick": int(pick),
+                        "fixed_questions": fixed,
+                        "shuffle_group_order": shuffle_group,
+                    }
+
+        std_config = {"keep_group_titles": keep_titles, "groups": std_groups}
+
+        # ----------------------------------------------------
+        # XEM TRƯỚC 70% + RÀ SOÁT 30%
+        # ----------------------------------------------------
+        st.markdown(
+            '<div class="workspace-title">Xem trước đề online • Rà soát đề</div>',
+            unsafe_allow_html=True,
+        )
         left, right = st.columns([2.35, 1], gap="large")
 
         with left:
             with st.container(border=True):
-                st.markdown('<div class="preview-heading"><b>👁️ Xem trước đề online</b><span class="preview-badge">70% không gian làm việc</span></div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="word-preview-note"><b>Trình xem mới:</b> DOCX được dựng trực tiếp trong trình duyệt bằng docx-preview 0.4.0. '
-                    'Office Math/OMML, ảnh, bảng, header/footer được ưu tiên hiển thị mà không phụ thuộc LibreOffice.</div>',
+                    '<div class="preview-heading"><b>👁️ Xem trước đề online</b>'
+                    '<span class="preview-badge">70% không gian làm việc</span></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    '<div class="word-preview-note"><b>Rà soát trực quan:</b> '
+                    'DTMIX chỉ tô <b style="color:#D71920">đỏ đáp án đúng đã nhận diện</b>. '
+                    'DOCX vẫn được dựng trực tiếp để giữ công thức Office Math/OMML, ảnh, bảng và định dạng Word.</div>',
                     unsafe_allow_html=True,
                 )
                 preview_mode = st.radio(
                     "Kiểu xem",
                     ["Xem trực tiếp DOCX", "Bản in PDF (nếu máy chủ có LibreOffice)"],
                     horizontal=True,
-                    key="std_preview_mode_v5",
+                    key="std_preview_mode_v6_3",
                     label_visibility="collapsed",
                 )
                 if preview_mode.startswith("Xem trực tiếp"):
-                    browser_docx_preview(engine, "std_browser", height=930)
+                    browser_docx_preview(engine, "std_browser_v63", height=900)
                 else:
-                    exact_word_preview(engine, "std_exact")
+                    exact_word_preview(engine, "std_exact_v63")
 
         with right:
             with st.container(border=True):
-                st.markdown('<div class="control-title">🩺 Rà soát nhanh</div>', unsafe_allow_html=True)
-                if not issues:
-                    st.success("Không phát hiện lỗi đáp án/phương án nổi bật.")
-                else:
-                    err = sum(1 for x in issues if x["level"] == "error")
-                    warn = len(issues) - err
-                    c1, c2 = st.columns(2)
-                    c1.metric("Thiếu/lỗi đáp án", err)
-                    c2.metric("Cảnh báo", warn)
-                    with st.container(height=175, border=False):
-                        for item in issues:
-                            icon = "❌" if item["level"] == "error" else "⚠️"
-                            st.markdown(
-                                f'<div class="audit-row"><span>{icon} <b>{esc(item["part"])}</b> · Câu {item["question"]}</span>'
-                                f'<span class="{"audit-bad" if item["level"]=="error" else "audit-warn"}">{esc(item["text"])}</span></div>',
-                                unsafe_allow_html=True,
-                            )
+                st.markdown(
+                    '<div class="control-title">🩺 Rà soát đề theo từng phần</div>',
+                    unsafe_allow_html=True,
+                )
 
-                st.divider()
-                st.markdown('<div class="control-title">⚙️ Cấu hình trộn tự động</div>', unsafe_allow_html=True)
-                keep_titles = st.checkbox("Giữ tiêu đề nhóm/mục", value=False, key="std_keep_titles_v3")
-                std_groups = {}
-                with st.container(height=500, border=False):
-                    for part in summary["parts"]:
-                        icon = "✅" if part["missing_count"] == 0 else "⚠️"
-                        with st.expander(f"{icon} {part['title']} · {part['question_count']} câu", expanded=False):
-                            multi = len(part["groups"]) > 1
-                            for g in part["groups"]:
-                                key = f"s3_{g['p_idx']}_{g['m_idx']}"
-                                if multi: st.markdown(f"**{g['title']}**")
-                                c1, c2 = st.columns(2)
-                                shuffle_q = c1.toggle("Trộn câu", value=(part["type"] != 4), key=key+"_sq")
-                                pick = c2.number_input("Số câu lấy", 0, g["question_count"], g["question_count"], key=key+"_pick")
-                                c3, c4 = st.columns(2)
-                                fixed = c3.text_input(
-                                    "Giữ vị trí câu",
-                                    value=", ".join(str(q["index"]) for q in g["questions"] if q["fixed"]),
-                                    placeholder="VD: 1, 5",
-                                    key=key+"_fix",
-                                )
-                                shuffle_group = c4.toggle(
-                                    "Trộn nhóm",
-                                    value=(multi and not g["is_fixed"] and part["type"] != 4),
-                                    disabled=not multi,
-                                    key=key+"_sg",
-                                )
-                                std_groups[f"{g['p_idx']}:{g['m_idx']}"] = {
-                                    "shuffle_questions": shuffle_q,
-                                    "pick": int(pick),
-                                    "fixed_questions": fixed,
-                                    "shuffle_group_order": shuffle_group,
-                                }
-                std_config = {"keep_group_titles": keep_titles, "groups": std_groups}
+                # Tạo danh sách câu thiếu đáp án theo từng phần.
+                missing_map = {}
+                warning_map = {}
+                for row in preview_rows:
+                    part_name = row["part"]
+                    missing_map.setdefault(part_name, [])
+                    warning_map.setdefault(part_name, [])
+                    if not row["valid"]:
+                        missing_map[part_name].append(row["number"])
+                    if row.get("duplicates"):
+                        warning_map[part_name].append(
+                            f'Câu {row["number"]}: trùng phương án {", ".join(row["duplicates"])}'
+                        )
+
+                for part in summary["parts"]:
+                    pname = part["title"]
+                    total = part["question_count"]
+                    valid = part["valid_count"]
+                    missing_nums = missing_map.get(pname, [])
+                    missing_count = len(missing_nums)
+
+                    st.markdown(
+                        f'<div class="review-part">'
+                        f'<div class="review-part-title">{esc(pname)}</div>'
+                        f'<div class="review-part-line">Tổng: <b>{total} câu</b> · '
+                        f'Đã có đáp án: <span class="review-ok">{valid}/{total}</span> · '
+                        f'Còn thiếu: <span class="{"review-ok" if missing_count == 0 else "review-bad"}">{missing_count}</span></div>'
+                        + (
+                            '<div class="review-allok">✓ Tất cả các câu đã có đáp án hợp lệ.</div>'
+                            if missing_count == 0
+                            else
+                            f'<div class="review-missing">Chưa có đáp án: Câu '
+                            f'{esc(", ".join(str(x) for x in missing_nums))}</div>'
+                        )
+                        + '</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    for warning in warning_map.get(pname, []):
+                        st.warning(warning)
+
+                # Các cảnh báo khác ngoài thiếu đáp án/trùng phương án
+                other_issues = [
+                    x for x in issues
+                    if x["level"] == "warning"
+                    and "Phương án trùng" not in x["text"]
+                ]
+                if other_issues:
+                    st.divider()
+                    st.markdown("**Cảnh báo bổ sung**")
+                    for item in other_issues:
+                        st.caption(f'⚠️ {item["part"]} · Câu {item["question"]}: {item["text"]}')
 
     else:
         groups = summary.get("youngmix_groups", [])
@@ -1681,9 +1825,9 @@ else:
                 )
                 master_fix = st.toggle(
                     "Cố định vị trí tất cả các nhóm",
-                    value=False,
+                    value=True,
                     key="ym_master_v3",
-                    help="Bật để các nhóm giữ nguyên vị trí, chỉ nội dung bên trong nhóm được trộn theo cấu hình."
+                    help="Mặc định bật: các nhóm giữ nguyên vị trí; chỉ nội dung bên trong nhóm được trộn theo cấu hình. Có thể tắt nếu muốn cho phép đổi vị trí nhóm."
                 )
                 show_source_answers = st.toggle(
                     "Hiển thị đáp án đã nhận diện trong phần rà soát",
@@ -1699,7 +1843,7 @@ else:
                             tag_class = re.sub(r"[<>#]", "", g.get("tag", "g3")).lower()
                             st.markdown(
                                 f'<span class="g-badge {tag_class if tag_class in ("g0","g1","g2","g3","g4") else "g3"}">{esc(g["tag"])}</span> '
-                                f'<span style="font-size:12px;color:#66758A">{esc(g["q_type"])}</span>',
+                                f'<span style="font-size:13px;color:#66758A">{esc(g["q_type"])}</span>',
                                 unsafe_allow_html=True,
                             )
                             mode_options = [
@@ -1762,6 +1906,6 @@ with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=Fal
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview tô đỏ câu và đáp án nhận diện</div>',
+    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview chỉ tô đỏ đáp án đúng</div>',
     unsafe_allow_html=True,
 )

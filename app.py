@@ -16,6 +16,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 from docx.oxml.ns import qn
+from lxml import etree
 
 try:
     import fitz  # PyMuPDF - dùng để dựng trang PDF thành ảnh preview
@@ -91,22 +92,22 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
     var(--bg);
   color:var(--ink);
 }}
-.block-container{{max-width:1580px;padding-top:.55rem;padding-bottom:3.2rem}}
+.block-container{{max-width:none;width:100%;padding:.35rem 1.1rem 2.2rem}}
 #MainMenu,footer,header{{visibility:hidden}}
 
 /* Hero sáng, không nền đen */
 .hero{{
   background:linear-gradient(120deg,var(--hero1),var(--hero2));
   border:1px solid color-mix(in srgb,var(--primary) 18%, white);
-  border-radius:18px;padding:15px 20px;color:var(--hero-text);
+  border-radius:16px;padding:11px 17px;color:var(--hero-text);
   box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:10px;
 }}
 .hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
 .hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
 .hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:25px}}
-.hero-title{{font-size:26px;font-weight:850;letter-spacing:-.3px;line-height:1}}
+.hero-title{{font-size:24px;font-weight:850;letter-spacing:-.3px;line-height:1}}
 .hero-sub{{font-size:12.5px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
-.hero-tags{{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}}
+.hero-tags{{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}}
 .hero-tag{{font-size:10.8px;font-weight:760;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.62);border:1px solid rgba(255,255,255,.9);color:var(--hero-text)}}
 .hero-side{{margin-left:auto;text-align:right;max-width:330px}}
 .hero-side b{{font-size:13px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:11px;margin-top:4px}}
@@ -177,6 +178,40 @@ hr{{border-color:#E7EDF4}}
 .result-ok{{background:var(--green-bg);border:1px solid #BFE5D6;border-radius:11px;color:#116B50;padding:10px 12px;font-weight:750}}
 .footer{{text-align:center;color:#93A0AF;font-size:11px;margin-top:22px}}
 
+/* Tổng quan gọn - tối ưu màn hình máy tính ở 100% */
+.summary-compact{{
+  display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:8px;margin:8px 0 8px;
+}}
+.summary-chip{{
+  background:#FFFFFF;border:1px solid var(--line);border-radius:11px;padding:8px 11px;
+  box-shadow:0 2px 8px rgba(45,75,105,.035);min-height:58px;
+}}
+.summary-chip .v{{font-size:22px;font-weight:850;color:var(--primary);line-height:1.05}}
+.summary-chip .l{{font-size:11.5px;font-weight:700;color:var(--muted);margin-top:4px}}
+.part-status-grid{{
+  display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:8px;margin:7px 0 11px;
+}}
+.part-status-card{{
+  background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:54px;
+}}
+.part-status-card .pn{{font-size:12.5px;font-weight:850;color:#203C5D}}
+.part-status-card .qc{{font-size:11.5px;color:#6D7F93;margin-top:2px}}
+.part-status-card .ans-ok{{font-size:11.5px;font-weight:850;color:#137A5A;text-align:right}}
+.part-status-card .ans-bad{{font-size:11.5px;font-weight:850;color:#B34A39;text-align:right}}
+.workspace-title{{
+  font-size:18px;font-weight:850;color:#193B61;margin:12px 0 7px;
+  display:flex;align-items:center;gap:8px;
+}}
+.workspace-title:before{{
+  content:"";width:5px;height:22px;border-radius:5px;background:linear-gradient(var(--primary),var(--primary2));
+}}
+@media(max-width:1200px){{
+  .summary-compact{{grid-template-columns:repeat(2,1fr)}}
+  .part-status-grid{{grid-template-columns:repeat(2,1fr)}}
+}}
+
+
 @media(max-width:1000px){{.hero-side{{display:none}}}}
 </style>
 
@@ -191,7 +226,6 @@ hr{{border-color:#E7EDF4}}
        <span class="hero-tag">g1 • g2 • g3</span><span class="hero-tag">Công thức • Hình ảnh • Bảng</span>
      </div>
    </div>
-   <div class="hero-side"><b>Một trang làm việc duy nhất</b><span>Tải đề → Chọn chế độ → Mã đề → Trộn & xuất</span></div>
  </div>
 </div>
 """,
@@ -241,73 +275,204 @@ def clear_engine() -> None:
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
 def _prepare_browser_preview_docx(file_bytes: bytes, signature: str) -> tuple[bytes, dict]:
     """
-    Chuẩn bị DOCX cho trình xem trong trình duyệt.
-    - Giữ nguyên DOCX gốc cho engine trộn đề.
-    - Chỉ tạo một bản tạm phục vụ preview.
-    - Nếu máy chủ có công cụ chuyển WMF/EMF -> PNG, thay ảnh vector legacy
-      bằng PNG nhưng giữ đường dẫn quan hệ, giúp trình duyệt hiển thị MathType/OLE cũ tốt hơn.
+    Tạo DOCX chỉ phục vụ XEM TRƯỚC:
+      - tô đỏ số câu;
+      - tô đỏ đáp án được nhận diện từ gạch chân/màu đỏ trong file gốc;
+      - tô đỏ dòng trả lời ngắn "Đáp án:";
+      - giữ nguyên file gốc để trộn;
+      - thử chuyển WMF/EMF legacy sang PNG nếu máy chủ hỗ trợ.
     """
-    stats = {"converted_wmf_emf": 0, "wmf_emf_total": 0}
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    NS = {"w": W}
+    stats = {
+        "converted_wmf_emf": 0,
+        "wmf_emf_total": 0,
+        "question_marks": 0,
+        "answer_marks": 0,
+    }
+
+    def _run_text(run):
+        return "".join((t.text or "") for t in run.xpath(".//w:t", namespaces=NS))
+
+    def _is_red_hex(val):
+        if not val:
+            return False
+        val = str(val).replace("#", "").strip()
+        if len(val) != 6:
+            return False
+        try:
+            rr = int(val[0:2], 16)
+            gg = int(val[2:4], 16)
+            bb = int(val[4:6], 16)
+            return rr > 150 and gg < 120 and bb < 120
+        except Exception:
+            return False
+
+    def _run_was_answer_marked(run):
+        rpr = run.find(f"{{{W}}}rPr")
+        if rpr is None:
+            return False
+        underline = rpr.find(f"{{{W}}}u")
+        if underline is not None:
+            val = underline.get(f"{{{W}}}val", "single")
+            if str(val).lower() not in ("none", "0", "false"):
+                return True
+        color = rpr.find(f"{{{W}}}color")
+        if color is not None and _is_red_hex(color.get(f"{{{W}}}val")):
+            return True
+        return False
+
+    def _set_run_red(run, bold=False):
+        rpr = run.find(f"{{{W}}}rPr")
+        if rpr is None:
+            rpr = etree.Element(f"{{{W}}}rPr")
+            run.insert(0, rpr)
+        color = rpr.find(f"{{{W}}}color")
+        if color is None:
+            color = etree.SubElement(rpr, f"{{{W}}}color")
+        color.set(f"{{{W}}}val", "FF0000")
+        for attr in ("themeColor", "themeTint", "themeShade"):
+            color.attrib.pop(f"{{{W}}}{attr}", None)
+        if bold:
+            bnode = rpr.find(f"{{{W}}}b")
+            if bnode is None:
+                bnode = etree.SubElement(rpr, f"{{{W}}}b")
+            bnode.set(f"{{{W}}}val", "1")
+
+    def _mark_overlapping_runs(infos, start_pos, end_pos, bold=False):
+        for run, a, b, _txt, _marked in infos:
+            if b > start_pos and a < end_pos:
+                _set_run_red(run, bold=bold)
+
+    def _annotate_document_xml(xml_bytes):
+        try:
+            root = etree.fromstring(xml_bytes)
+        except Exception:
+            return xml_bytes
+
+        for p in root.xpath(".//w:p", namespaces=NS):
+            runs = p.xpath(".//w:r", namespaces=NS)
+            infos = []
+            pos = 0
+            for run in runs:
+                txt = _run_text(run)
+                if not txt:
+                    continue
+                infos.append((run, pos, pos + len(txt), txt, _run_was_answer_marked(run)))
+                pos += len(txt)
+
+            if not infos:
+                continue
+
+            full = "".join(item[3] for item in infos)
+            if not full.strip():
+                continue
+
+            # Ghi nhớ format đáp án gốc trước khi tô đỏ số câu.
+            marked_ranges = [(a, b) for _run, a, b, _txt, marked in infos if marked]
+
+            # Tô đỏ số câu.
+            for m in re.finditer(r"(?i)(?:#\s*)?(?:Câu|Question)\s*\d+\s*[\.\):]?", full):
+                _mark_overlapping_runs(infos, m.start(), m.end(), bold=True)
+                stats["question_marks"] += 1
+
+            # Tô đỏ toàn bộ phương án mà DTMIX nhận diện là đúng.
+            option_marks = list(re.finditer(
+                r"(?i)(?:^|[\s\u00A0\u200B\uFFFC])(#?[A-Ga-g][\.\)])",
+                full,
+            ))
+            starts = [m.start(1) for m in option_marks]
+            for i, seg_start in enumerate(starts):
+                seg_end = starts[i + 1] if i + 1 < len(starts) else len(full)
+                recognized = any(b > seg_start and a < seg_end for a, b in marked_ranges)
+                if recognized:
+                    _mark_overlapping_runs(infos, seg_start, seg_end, bold=False)
+                    stats["answer_marks"] += 1
+
+            # Trả lời ngắn.
+            if re.search(r"(?i)\bđáp\s*án\s*[:\.]", full):
+                for run, *_ in infos:
+                    _set_run_red(run, bold=False)
+                stats["answer_marks"] += 1
+            elif (
+                re.search(r"(?i)^\s*A\.\s*[-+]?\d", full)
+                and not re.search(r"(?i)(?:^|\s)B\.", full)
+            ):
+                for run, *_ in infos:
+                    _set_run_red(run, bold=False)
+                stats["answer_marks"] += 1
+
+        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone="yes")
+
     try:
         zin = zipfile.ZipFile(io.BytesIO(file_bytes), "r")
-        names = zin.namelist()
-        legacy = [n for n in names if n.lower().startswith("word/media/") and n.lower().endswith((".wmf", ".emf"))]
+        infos_zip = zin.infolist()
+        entries = {info.filename: zin.read(info.filename) for info in infos_zip}
+        zin.close()
+
+        if "word/document.xml" in entries:
+            entries["word/document.xml"] = _annotate_document_xml(entries["word/document.xml"])
+
+        legacy = [
+            name for name in entries
+            if name.lower().startswith("word/media/")
+            and name.lower().endswith((".wmf", ".emf"))
+        ]
         stats["wmf_emf_total"] = len(legacy)
-        if not legacy:
-            zin.close()
-            return file_bytes, stats
 
         converter = shutil.which("magick") or shutil.which("convert")
-        if not converter:
-            zin.close()
-            return file_bytes, stats
+        if legacy and converter:
+            temp_root = Path(tempfile.mkdtemp(prefix="dtmix_vec_"))
+            try:
+                for idx, name in enumerate(legacy):
+                    ext = Path(name).suffix.lower()
+                    srcf = temp_root / f"source_{idx}{ext}"
+                    dstf = temp_root / f"result_{idx}.png"
+                    srcf.write_bytes(entries[name])
+                    try:
+                        subprocess.run(
+                            [converter, str(srcf), str(dstf)],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            timeout=20,
+                        )
+                        if dstf.exists() and dstf.stat().st_size > 32:
+                            entries[name] = dstf.read_bytes()
+                            stats["converted_wmf_emf"] += 1
+                    except Exception:
+                        pass
+            finally:
+                shutil.rmtree(temp_root, ignore_errors=True)
 
-        replacement = {}
-        temp_root = Path(tempfile.mkdtemp(prefix="dtmix_vec_"))
-        try:
-            for name in legacy:
-                raw = zin.read(name)
-                ext = Path(name).suffix.lower()
-                srcf = temp_root / ("source" + ext)
-                dstf = temp_root / "result.png"
-                srcf.write_bytes(raw)
-                if dstf.exists():
-                    dstf.unlink()
-                cmd = [converter, str(srcf), str(dstf)]
+            if stats["converted_wmf_emf"] and "[Content_Types].xml" in entries:
                 try:
-                    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
-                    if dstf.exists() and dstf.stat().st_size > 32:
-                        replacement[name] = dstf.read_bytes()
-                        stats["converted_wmf_emf"] += 1
+                    ct_root = etree.fromstring(entries["[Content_Types].xml"])
+                    for node in ct_root:
+                        ext = (node.get("Extension") or "").lower()
+                        if ext in ("wmf", "emf"):
+                            node.set("ContentType", "image/png")
+                    entries["[Content_Types].xml"] = etree.tostring(
+                        ct_root,
+                        xml_declaration=True,
+                        encoding="UTF-8",
+                        standalone="yes",
+                    )
                 except Exception:
                     pass
 
-            if not replacement:
-                zin.close()
-                return file_bytes, stats
+        out_io = io.BytesIO()
+        with zipfile.ZipFile(out_io, "w", zipfile.ZIP_DEFLATED) as zout:
+            seen = set()
+            for info in infos_zip:
+                if info.filename in entries:
+                    zout.writestr(info, entries[info.filename])
+                    seen.add(info.filename)
+            for name, data in entries.items():
+                if name not in seen:
+                    zout.writestr(name, data)
 
-            out_io = io.BytesIO()
-            with zipfile.ZipFile(out_io, "w", zipfile.ZIP_DEFLATED) as zout:
-                for info in zin.infolist():
-                    data = replacement.get(info.filename, zin.read(info.filename))
-                    if info.filename == "[Content_Types].xml":
-                        txt = data.decode("utf-8", errors="ignore")
-                        if any(k.lower().endswith(".wmf") for k in replacement):
-                            txt = re.sub(
-                                r'(<Default[^>]*Extension=["\']wmf["\'][^>]*ContentType=["\'])[^"\']+(["\'][^>]*/>)',
-                                r'\1image/png\2', txt, flags=re.I
-                            )
-                        if any(k.lower().endswith(".emf") for k in replacement):
-                            txt = re.sub(
-                                r'(<Default[^>]*Extension=["\']emf["\'][^>]*ContentType=["\'])[^"\']+(["\'][^>]*/>)',
-                                r'\1image/png\2', txt, flags=re.I
-                            )
-                        data = txt.encode("utf-8")
-                    zout.writestr(info, data)
-            zin.close()
-            return out_io.getvalue(), stats
-        finally:
-            shutil.rmtree(temp_root, ignore_errors=True)
+        return out_io.getvalue(), stats
+
     except Exception:
         return file_bytes, stats
 
@@ -326,7 +491,7 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
 
-    conversion_note = ""
+    conversion_note = f" • đã đánh dấu {stats.get('question_marks', 0)} số câu, {stats.get('answer_marks', 0)} đáp án"
     if stats.get("wmf_emf_total", 0):
         if stats.get("converted_wmf_emf", 0):
             conversion_note = f" • đã chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} ảnh WMF/EMF sang PNG"
@@ -476,7 +641,8 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
     signature = hashlib.sha256(engine.file_bytes).hexdigest()
     with st.spinner("Đang dựng bản xem trước Word chính xác..."):
-        pdf_bytes, err = _docx_to_pdf_bytes(engine.file_bytes, signature)
+        annotated_bytes, _stats = _prepare_browser_preview_docx(engine.file_bytes, signature)
+        pdf_bytes, err = _docx_to_pdf_bytes(annotated_bytes, signature + "_annotated")
 
     if pdf_bytes:
         # Lấy số trang nhẹ nhàng
@@ -1097,6 +1263,45 @@ def codes_ui(prefix: str) -> list[str]:
     return codes
 
 
+
+def _safe_zip_name(source_filename: str) -> str:
+    stem = Path(source_filename or "de_goc").stem.strip() or "de_goc"
+    stem = re.sub(r'[\\/:*?"<>|]+', "_", stem).strip(" .")
+    return f"dtmix_{stem}.zip"
+
+
+def auto_download_zip(zip_bytes: bytes, filename: str) -> None:
+    """Tự tải ZIP sau khi trộn xong."""
+    payload = base64.b64encode(zip_bytes).decode("ascii")
+    html_download = f"""
+<!doctype html>
+<html><body style="margin:0;background:transparent">
+<script>
+(function(){{
+  const b64 = {json.dumps(payload)};
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], {{type:"application/zip"}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = {json.dumps(filename)};
+  document.body.appendChild(a);
+  setTimeout(() => {{
+    a.click();
+    setTimeout(() => {{
+      URL.revokeObjectURL(url);
+      a.remove();
+    }}, 1500);
+  }}, 200);
+}})();
+</script>
+</body></html>
+"""
+    components.html(html_download, height=0, scrolling=False)
+
+
 def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
     if not codes:
         st.error("Chưa có mã đề hợp lệ.")
@@ -1115,9 +1320,11 @@ def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
             standard_config=std_cfg,
             youngmix_config=ym_cfg,
         )
-        progress.progress(100, text="Hoàn tất")
+        progress.progress(100, text="Hoàn tất — đang tải ZIP...")
         st.session_state.mix_result = result
-        st.rerun()
+        zip_name = _safe_zip_name(engine.filename)
+        auto_download_zip(result.zip_bytes, zip_name)
+        st.toast(f"Đã trộn xong. Đang tải {zip_name}", icon="✅")
     except Exception as exc:
         st.error(f"Không thể trộn đề: {exc}")
         with st.expander("Chi tiết lỗi kỹ thuật"):
@@ -1166,8 +1373,6 @@ def download_results() -> None:
 # ============================================================
 # 1 — HEADER + TOOLBAR
 # ============================================================
-sec(1, "Chuẩn bị đề & trộn nhanh", "Mọi thao tác chính nằm trên một hàng: Đề gốc → Chế độ xử lý → Mã đề → Trộn & xuất file.")
-
 with st.container(border=True):
     title_row, theme_row = st.columns([4.6, 1], gap="small")
     title_row.markdown("**📝 Thông tin đầu trang đề**")
@@ -1243,7 +1448,7 @@ with st.container(border=True):
             key="top_analyze",
         )
         mix_clicked = st.button(
-            "🚀 TRỘN & XUẤT",
+            "🚀 TRỘN & TẢI ZIP",
             type="primary",
             use_container_width=True,
             disabled=not engine_ready,
@@ -1255,17 +1460,6 @@ with st.container(border=True):
             st.caption("Chưa phân tích")
         else:
             st.caption("Chọn file DOCX")
-
-        if st.session_state.get("mix_result"):
-            result = st.session_state["mix_result"]
-            st.download_button(
-                "⬇ ZIP KẾT QUẢ",
-                data=result.zip_bytes,
-                file_name=result.zip_name,
-                mime="application/zip",
-                use_container_width=True,
-                key="top_download_zip",
-            )
 
     if analyze_clicked and raw is not None:
         clear_engine()
@@ -1290,62 +1484,73 @@ if current_sig is not None and st.session_state.get("dtmix_signature") != curren
     engine = None
 
 # ============================================================
-# 2 — OVERVIEW
+# TỔNG QUAN GỌN
 # ============================================================
-sec(2, "Tổng quan & tình trạng đề", "Ngay sau khi phân tích, DTMIX cho biết số phần, số câu và mức độ hoàn chỉnh của đáp án.")
-
-if not engine:
-    with st.container(border=True):
-        st.caption("Chưa có dữ liệu. Sau khi phân tích, thống kê đề sẽ xuất hiện tại đây.")
-else:
+if engine:
     summary = engine.summary()
     parts = summary.get("parts", [])
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Phần / nhóm", len(summary.get("youngmix_groups", [])) if engine.youngmix else len(parts))
-    k2.metric("Tổng số câu", summary["total_questions"])
-    k3.metric("Có đáp án / hợp lệ", summary["valid_answers"])
-    k4.metric("Cần kiểm tra", summary["missing_answers"])
-    readiness = "SẴN SÀNG" if summary["missing_answers"] == 0 else "CẦN RÀ SOÁT"
-    k5.metric("Trạng thái", readiness)
 
-    if summary["missing_answers"] == 0:
-        st.markdown('<div class="status-good">✅ Đề đã nhận diện đầy đủ các đáp án bắt buộc. Có thể tiếp tục cấu hình và trộn đề.</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(
-            f'<div class="status-warn">⚠️ Có {summary["missing_answers"]} câu chưa nhận diện đáp án hợp lệ hoặc thuộc dạng cần kiểm tra. Xem danh sách ở khu vực Rà soát.</div>',
-            unsafe_allow_html=True,
-        )
+    unit_count = len(summary.get("youngmix_groups", [])) if engine.youngmix else len(parts)
+    answer_text = f'{summary["valid_answers"]}/{summary["total_questions"]}'
+    need_check = summary["missing_answers"]
 
+    st.markdown(
+        f"""
+<div class="summary-compact">
+  <div class="summary-chip"><div class="v">{unit_count}</div><div class="l">Phần / nhóm</div></div>
+  <div class="summary-chip"><div class="v">{summary["total_questions"]}</div><div class="l">Tổng số câu</div></div>
+  <div class="summary-chip"><div class="v">{answer_text}</div><div class="l">Đã có đáp án / hợp lệ</div></div>
+  <div class="summary-chip"><div class="v">{need_check}</div><div class="l">Câu cần kiểm tra</div></div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    cards = []
     if not engine.youngmix:
-        cols = st.columns(max(1, min(4, len(parts))))
-        for i, part in enumerate(parts):
-            with cols[i % len(cols)]:
-                ok = part["missing_count"] == 0
-                st.markdown(
-                    f'<div class="audit-row"><span><b>{esc(part["title"])}</b><br>'
-                    f'<span style="color:#7A899D">{part["question_count"]} câu</span></span>'
-                    f'<span class="{"audit-ok" if ok else "audit-warn"}">{part["valid_count"]}/{part["question_count"]} ĐA</span></div>',
-                    unsafe_allow_html=True,
-                )
+        roman = {1: "PHẦN I", 2: "PHẦN II", 3: "PHẦN III", 4: "PHẦN IV"}
+        for part in parts:
+            short_name = roman.get(part.get("type"), f'PHẦN {part.get("type")}')
+            total = part["question_count"]
+            valid = part["valid_count"]
+            missing = part["missing_count"]
+            cls = "ans-ok" if missing == 0 else "ans-bad"
+            ans = f"Đáp án {valid}/{total} ✓" if missing == 0 else f"Đáp án {valid}/{total} • thiếu {missing}"
+            cards.append(
+                f'<div class="part-status-card" title="{esc(part.get("title",""))}">'
+                f'<div><div class="pn">{short_name}</div><div class="qc">{total} câu</div></div>'
+                f'<div class="{cls}">{ans}</div></div>'
+            )
     else:
-        groups = summary.get("youngmix_groups", [])
-        cols = st.columns(max(1, min(4, len(groups))))
-        for i, g in enumerate(groups):
-            tag = re.sub(r"[<>#]", "", g.get("tag", "g")).lower()
-            st_cls = tag if tag in ("g0","g1","g2","g3","g4") else "g3"
-            with cols[i % len(cols)]:
-                st.markdown(
-                    f'<div class="audit-row"><span><b>{esc(g["name"])}</b> '
-                    f'<span class="g-badge {st_cls}">{esc(g["tag"])}</span><br>'
-                    f'<span style="color:#7A899D">{g["question_count"]} câu</span></span>'
-                    f'<span style="font-size:12px;color:#536174">{esc(g["mix_type"])}</span></div>',
-                    unsafe_allow_html=True,
-                )
+        flat_groups = []
+        for part in parts:
+            for g in part.get("groups", []):
+                valid = sum(1 for q in g.get("questions", []) if q.get("valid_answer"))
+                flat_groups.append((g["question_count"], valid))
+        for i, g in enumerate(summary.get("youngmix_groups", [])):
+            total = g["question_count"]
+            valid = flat_groups[i][1] if i < len(flat_groups) else total
+            missing = max(0, total - valid)
+            cls = "ans-ok" if missing == 0 else "ans-bad"
+            ans = f"Đáp án {valid}/{total} ✓" if missing == 0 else f"Đáp án {valid}/{total} • thiếu {missing}"
+            cards.append(
+                f'<div class="part-status-card">'
+                f'<div><div class="pn">{esc(g["name"])} {esc(g["tag"])}</div><div class="qc">{total} câu</div></div>'
+                f'<div class="{cls}">{ans}</div></div>'
+            )
+
+    st.markdown(
+        '<div class="part-status-grid">' + "".join(cards) + '</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    summary = None
+    parts = []
 
 # ============================================================
 # 3 — WORKSPACE: PREVIEW + REVIEW/CONFIG
 # ============================================================
-sec(3, "Xem trước đề online • Rà soát • Cấu hình", "Khu vực xem đề chiếm khoảng 70% chiều rộng. DTMIX ưu tiên dựng DOCX trực tiếp trong trình duyệt để hiển thị chữ, ảnh, bảng và công thức Office Math.")
+st.markdown('<div class="workspace-title">Xem trước đề online • Rà soát • Cấu hình</div>', unsafe_allow_html=True)
 
 std_config = None
 ym_config = None
@@ -1534,18 +1739,6 @@ if engine and st.session_state.get("pending_mix"):
         run_mix(engine, _codes, std_cfg=std_config)
 
 # ============================================================
-# 4 — RESULTS
-# ============================================================
-sec(4, "Kết quả", "Sau khi trộn, tải nhanh ZIP ở thanh trên hoặc tải riêng từng file tại đây.")
-
-if not st.session_state.get("mix_result"):
-    with st.container(border=True):
-        st.caption("Chưa có kết quả. Sau khi rà soát/cấu hình, dùng nút **TRỘN & XUẤT** ở thanh trên cùng.")
-else:
-    with st.container(border=True):
-        download_results()
-
-# ============================================================
 # GUIDE
 # ============================================================
 st.markdown("---")
@@ -1564,11 +1757,11 @@ with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=Fal
 
 **Đáp án:** Phần I/II nên gạch chân hoặc tô đỏ đáp án đúng trong Word. Phần III dùng `Đáp án:` hoặc `A. giá trị`.
 
-**Quy trình:** tải file → phân tích/rà soát → xem trước → cấu hình → chọn mã đề → trộn → tải kết quả.
+**Quy trình:** tải file → phân tích/rà soát → xem trước → cấu hình → chọn mã đề → bấm **TRỘN & TẢI ZIP**. Khi trộn xong, ZIP được tải tự động.
 """
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online 1.3 • Giao diện sáng • Preview Word chính xác • Thuật toán DTMIX 1.3</div>',
+    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview tô đỏ câu và đáp án nhận diện</div>',
     unsafe_allow_html=True,
 )

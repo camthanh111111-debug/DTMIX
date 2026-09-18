@@ -3,12 +3,21 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
 from docx.oxml.ns import qn
+
+try:
+    import fitz  # PyMuPDF - dùng để dựng trang PDF thành ảnh preview
+except Exception:
+    fitz = None
 
 from engine import DTMIXWebEngine
 
@@ -23,165 +32,133 @@ st.set_page_config(
 )
 
 # -------------------- THEME --------------------
+# Người dùng có thể đổi bảng màu; toàn bộ đều là nền sáng, không dùng nền đen.
+_THEME_PRESETS = {
+    "Xanh biển sáng": {
+        "bg": "#F3F8FE", "card": "#FFFFFF", "primary": "#2469B5", "primary2": "#4B9AE8",
+        "hero1": "#E9F3FF", "hero2": "#D8EBFF", "hero_text": "#173A63",
+        "line": "#D7E4F2", "soft": "#F7FAFE", "muted": "#63758A",
+    },
+    "Xanh ngọc": {
+        "bg": "#F2FAF7", "card": "#FFFFFF", "primary": "#247A65", "primary2": "#48A98E",
+        "hero1": "#E6F6F0", "hero2": "#D6EFE7", "hero_text": "#195646",
+        "line": "#D5E9E1", "soft": "#F7FCFA", "muted": "#637970",
+    },
+    "Tím dịu": {
+        "bg": "#F7F4FC", "card": "#FFFFFF", "primary": "#7056AE", "primary2": "#9A82D3",
+        "hero1": "#EFEAFA", "hero2": "#E3DCF5", "hero_text": "#4E3A7D",
+        "line": "#E1DAEE", "soft": "#FBF9FE", "muted": "#726B80",
+    },
+    "Kem sáng": {
+        "bg": "#FBF8F2", "card": "#FFFFFF", "primary": "#8D6738", "primary2": "#B98A50",
+        "hero1": "#F7EEDD", "hero2": "#F0DFC5", "hero_text": "#62451F",
+        "line": "#E9DDCB", "soft": "#FEFCF8", "muted": "#7D7161",
+    },
+}
+_theme_name = st.session_state.get("ui_theme", "Xanh biển sáng")
+_theme = _THEME_PRESETS.get(_theme_name, _THEME_PRESETS["Xanh biển sáng"])
+
 st.markdown(
-    r"""
+    f"""
 <style>
-:root{
-  --navy:#0B2447;
-  --navy2:#123B72;
-  --blue:#176BCE;
-  --blue2:#2D8CFF;
-  --sky:#EAF4FF;
-  --green:#14845C;
-  --green-bg:#EAF8F2;
-  --amber:#B86B00;
-  --amber-bg:#FFF7E8;
-  --red:#C8394A;
+:root{{
+  --bg:{_theme["bg"]};
+  --card:{_theme["card"]};
+  --primary:{_theme["primary"]};
+  --primary2:{_theme["primary2"]};
+  --hero1:{_theme["hero1"]};
+  --hero2:{_theme["hero2"]};
+  --hero-text:{_theme["hero_text"]};
+  --line:{_theme["line"]};
+  --soft:{_theme["soft"]};
+  --muted:{_theme["muted"]};
+  --ink:#203044;
+  --green:#17785B;
+  --green-bg:#EAF7F1;
+  --amber:#A96A0B;
+  --amber-bg:#FFF6E7;
+  --red:#B93E4B;
   --red-bg:#FFF0F2;
-  --ink:#172033;
-  --muted:#66758A;
-  --line:#DCE5F0;
-  --soft:#F5F8FC;
-  --white:#FFFFFF;
-}
-html,body,[class*="css"]{font-family:Inter,"Segoe UI",Arial,sans-serif}
-.stApp{
+}}
+html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
+.stApp{{
   background:
-    radial-gradient(circle at 0 0,rgba(45,140,255,.10),transparent 28rem),
-    radial-gradient(circle at 100% 5%,rgba(20,132,92,.06),transparent 25rem),
-    #F5F8FC;
-}
-.block-container{max-width:1480px;padding-top:.8rem;padding-bottom:4rem}
-#MainMenu,footer,header{visibility:hidden}
+    radial-gradient(circle at 0 0, color-mix(in srgb, var(--primary2) 12%, transparent), transparent 28rem),
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--primary) 8%, transparent), transparent 25rem),
+    var(--bg);
+  color:var(--ink);
+}}
+.block-container{{max-width:1580px;padding-top:.55rem;padding-bottom:3.2rem}}
+#MainMenu,footer,header{{visibility:hidden}}
 
-/* HERO */
-.hero{
-  background:linear-gradient(120deg,#08244B 0%,#0C3972 48%,#176BCE 100%);
-  border-radius:20px;padding:17px 22px;color:#fff;
-  box-shadow:0 18px 48px rgba(11,36,71,.18);position:relative;overflow:hidden;
-  margin-bottom:14px;
-}
-.hero:after{
-  content:"";position:absolute;width:310px;height:310px;border-radius:50%;
-  right:-100px;top:-135px;background:rgba(255,255,255,.08);
-  box-shadow:-160px 200px 0 rgba(255,255,255,.035)
-}
-.hero-row{display:flex;align-items:center;gap:17px;position:relative;z-index:2}
-.hero-icon{
-  width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;
-  background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.2);font-size:29px
-}
-.hero-title{font-size:27px;font-weight:850;letter-spacing:-.4px;line-height:1}
-.hero-sub{font-size:13px;color:#D6E8FF;margin-top:5px}
-.hero-tags{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
-.hero-tag{font-size:11.5px;font-weight:750;padding:5px 9px;border-radius:999px;background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.14)}
-.hero-side{margin-left:auto;text-align:right}
-.hero-side b{font-size:14px}.hero-side span{display:block;color:#D6E8FF;font-size:12px;margin-top:5px}
+/* Hero sáng, không nền đen */
+.hero{{
+  background:linear-gradient(120deg,var(--hero1),var(--hero2));
+  border:1px solid color-mix(in srgb,var(--primary) 18%, white);
+  border-radius:18px;padding:15px 20px;color:var(--hero-text);
+  box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:10px;
+}}
+.hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
+.hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
+.hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:25px}}
+.hero-title{{font-size:26px;font-weight:850;letter-spacing:-.3px;line-height:1}}
+.hero-sub{{font-size:12.5px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
+.hero-tags{{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}}
+.hero-tag{{font-size:10.8px;font-weight:760;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.62);border:1px solid rgba(255,255,255,.9);color:var(--hero-text)}}
+.hero-side{{margin-left:auto;text-align:right;max-width:330px}}
+.hero-side b{{font-size:13px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:11px;margin-top:4px}}
 
-/* FLOW */
-.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:0 0 18px}
-.flow-item{background:#fff;border:1px solid var(--line);border-radius:13px;padding:7px 10px;display:flex;gap:9px;align-items:center;box-shadow:0 4px 14px rgba(11,36,71,.035)}
-.flow-no{min-width:27px;height:27px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:#EAF3FF;color:#176BCE;font-size:12px;font-weight:850}
-.flow-item b{font-size:12.5px;color:#24364D}.flow-item span{display:block;font-size:10.5px;color:#7A899D;margin-top:1px}
+.sec{{display:flex;gap:10px;align-items:center;margin:14px 0 7px}}
+.sec-no{{width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--primary),var(--primary2));color:white;display:flex;align-items:center;justify-content:center;font-weight:850;box-shadow:0 5px 12px color-mix(in srgb,var(--primary) 24%, transparent)}}
+.sec-title{{font-size:19px;font-weight:820;color:#203044}} .sec-sub{{font-size:12px;color:var(--muted);margin-top:1px}}
 
-/* SECTION */
-.sec{display:flex;gap:11px;align-items:center;margin:16px 0 8px}
-.sec-no{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#176BCE,#2D8CFF);color:white;display:flex;align-items:center;justify-content:center;font-weight:850;box-shadow:0 6px 14px rgba(23,107,206,.2)}
-.sec-title{font-size:20px;font-weight:820;color:#172033}.sec-sub{font-size:12.5px;color:#748297;margin-top:1px}
+[data-testid="stVerticalBlockBorderWrapper"]{{
+  border:1px solid var(--line)!important;border-radius:15px!important;background:rgba(255,255,255,.98);
+  box-shadow:0 6px 18px rgba(55,79,104,.045);padding:3px
+}}
+[data-testid="stMetric"]{{background:linear-gradient(180deg,#fff,var(--soft));border:1px solid var(--line);border-radius:13px;padding:10px 13px;box-shadow:0 3px 11px rgba(55,79,104,.035)}}
+[data-testid="stMetricValue"]{{color:var(--primary)}} [data-testid="stMetricLabel"]{{color:var(--muted)}}
+[data-testid="stFileUploaderDropzone"]{{background:var(--soft);border:1.5px dashed color-mix(in srgb,var(--primary2) 65%, white);border-radius:12px;min-height:78px;padding:.45rem}}
+[data-testid="stFileUploaderDropzone"] section{{padding:.2rem .5rem}}
+.stButton>button{{border-radius:9px;font-weight:760;min-height:40px}}
+.stButton>button[kind="primary"]{{background:linear-gradient(90deg,var(--primary),var(--primary2));border:0;box-shadow:0 6px 15px color-mix(in srgb,var(--primary) 22%, transparent)}}
+.stDownloadButton>button{{border-radius:9px;font-weight:760}}
+.stTextInput input,.stNumberInput input{{border-radius:8px;background:#fff!important;color:#23364A!important}}
+.stSelectbox div[data-baseweb="select"]>div{{border-radius:8px;background:#fff!important;color:#23364A!important}}
+.stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
+.stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
+hr{{border-color:#E7EDF4}}
 
-/* STREAMLIT CARDS */
-[data-testid="stVerticalBlockBorderWrapper"]{
-  border:1px solid var(--line)!important;border-radius:16px!important;background:rgba(255,255,255,.97);
-  box-shadow:0 7px 22px rgba(11,36,71,.045);padding:3px
-}
-[data-testid="stMetric"]{background:linear-gradient(180deg,#fff,#FBFDFF);border:1px solid var(--line);border-radius:15px;padding:13px 15px;box-shadow:0 4px 14px rgba(11,36,71,.035)}
-[data-testid="stMetricValue"]{color:#0B376B}
-[data-testid="stMetricLabel"]{color:#66758A}
-[data-testid="stFileUploaderDropzone"]{background:#F7FBFF;border:1.5px dashed #8DB9E9;border-radius:13px}
-.stButton>button{border-radius:10px;font-weight:760;min-height:42px}
-.stButton>button[kind="primary"]{background:linear-gradient(90deg,#176BCE,#2D8CFF);border:0;box-shadow:0 7px 17px rgba(23,107,206,.2)}
-.stDownloadButton>button{border-radius:10px;font-weight:780}
-.stTextInput input,.stNumberInput input{border-radius:9px}
-.stSelectbox div[data-baseweb="select"]>div{border-radius:9px}
-.stExpander{background:#fff;border:1px solid #E3EAF3!important;border-radius:12px!important}
-hr{border-color:#E8EEF5}
+.status-good{{background:var(--green-bg);border:1px solid #BFE5D6;color:#116B50;border-radius:11px;padding:9px 12px;font-weight:750}}
+.status-warn{{background:var(--amber-bg);border:1px solid #EED9AE;color:#955B00;border-radius:11px;padding:9px 12px;font-weight:750}}
+.status-bad{{background:var(--red-bg);border:1px solid #EFC5CB;color:#A53240;border-radius:11px;padding:9px 12px;font-weight:750}}
+.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:11.5px;font-weight:720}}
+.mini-help{{font-size:11.5px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:8px 10px;border-radius:9px;line-height:1.5}}
+.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:12.5px;gap:10px}}
+.audit-row:last-child{{border-bottom:0}} .audit-ok{{color:#17785B;font-weight:800}} .audit-warn{{color:#A96A0B;font-weight:800}} .audit-bad{{color:#B93E4B;font-weight:800}}
+.g-badge{{display:inline-block;border-radius:7px;padding:3px 7px;font-size:10.8px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}}
+.g1{{background:#EDF8FF;color:#126A9A}} .g2{{background:#F2EEFF;color:#6743B1}} .g3{{background:#EAF8F2;color:#0B7A53}} .g0{{background:#F2F4F7;color:#536174}} .g4{{background:#FFF3E7;color:#A45B00}}
+.word-preview-note{{font-size:11.5px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
+.preview-toolbar{{font-size:11.5px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
+.result-ok{{background:var(--green-bg);border:1px solid #BFE5D6;border-radius:11px;color:#116B50;padding:10px 12px;font-weight:750}}
+.footer{{text-align:center;color:#93A0AF;font-size:11px;margin-top:22px}}
 
-/* STATUS */
-.status-good{background:var(--green-bg);border:1px solid #BFE9D7;color:#0B6D4B;border-radius:12px;padding:10px 13px;font-weight:760}
-.status-warn{background:var(--amber-bg);border:1px solid #F1D8A7;color:#955600;border-radius:12px;padding:10px 13px;font-weight:760}
-.status-bad{background:var(--red-bg);border:1px solid #F0C3C9;color:#AA2E3D;border-radius:12px;padding:10px 13px;font-weight:760}
-.file-pill{display:inline-block;background:#EEF5FF;color:#145FAA;border:1px solid #D5E6FA;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}
-.mini-help{font-size:12px;color:#68788E;background:#F7FAFE;border:1px solid #E1E9F3;padding:9px 11px;border-radius:10px;line-height:1.55}
-.audit-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #EEF2F7;font-size:13px}
-.audit-row:last-child{border-bottom:0}
-.audit-ok{color:#14845C;font-weight:800}.audit-warn{color:#B86B00;font-weight:800}.audit-bad{color:#C8394A;font-weight:800}
-
-/* PREVIEW */
-.preview-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
-.preview-title{font-weight:820;color:#17365D;font-size:15px}
-.qcard{background:#fff;border:1px solid #E1E8F1;border-radius:12px;padding:13px 14px;margin:0 0 10px;box-shadow:0 3px 10px rgba(11,36,71,.025)}
-.qcard.issue{border-color:#F0C8A5;background:#FFFCF7}
-.qnum{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:850;color:#176BCE;background:#EDF5FF;border-radius:999px;padding:4px 8px;margin-bottom:7px}
-.qtext{font-family:"Times New Roman",serif;font-size:17px;line-height:1.43;color:#161B22}
-.opt{font-family:"Times New Roman",serif;font-size:16.2px;line-height:1.38;padding:4px 8px;margin-top:3px;border-radius:7px}
-.opt.correct{background:#EAF8F2;color:#0B6D4B;font-weight:700;border-left:3px solid #28A979}
-.opt.normal{background:#FAFCFF;color:#283342}
-.short-answer{margin-top:7px;background:#EAF8F2;border-left:3px solid #28A979;border-radius:7px;padding:6px 9px;color:#0B6D4B;font-weight:700;font-family:"Times New Roman",serif}
-.media-chip{display:inline-block;margin:6px 5px 0 0;background:#F3F0FF;color:#5B42A8;border:1px solid #E2DAFF;border-radius:999px;padding:3px 7px;font-size:11.5px;font-family:Inter,"Segoe UI",sans-serif}
-.issue-chip{display:inline-block;margin:6px 5px 0 0;background:#FFF2E8;color:#A95B00;border:1px solid #F1D3B1;border-radius:999px;padding:3px 7px;font-size:11.5px;font-family:Inter,"Segoe UI",sans-serif}
-
-
-/* RICH WORD PREVIEW */
-.word-preview-note{font-size:11.5px;color:#68788E;margin:4px 0 8px}
-.doc-page{background:#fff;color:#111827;max-width:100%;margin:0 auto;padding:22px 28px;min-height:650px;font-family:"Times New Roman",serif;font-size:18px;line-height:1.42}
-.doc-part-title{font-family:"Times New Roman",serif;font-size:19px;font-weight:800;text-align:left;margin:9px 0 7px;color:#111827}
-.doc-group-title{font-size:17px;font-weight:700;margin:8px 0 5px;color:#24364D}
-.doc-p{margin:3px 0;white-space:normal}
-.doc-p.center{text-align:center}.doc-p.right{text-align:right}.doc-p.justify{text-align:justify}
-.doc-answer{margin:3px 0 3px 16px;padding:3px 7px;border-radius:6px}
-.doc-answer.correct{background:#EAF8F2;color:#0B6D4B;border-left:3px solid #28A979;font-weight:700}
-.doc-answer.normal{background:transparent}
-.doc-img-wrap{text-align:center;margin:9px 0}.doc-img{max-width:96%;height:auto;border-radius:4px}
-.doc-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:16px}.doc-table td{border:1px solid #C9D3DF;padding:5px 7px;vertical-align:top}
-.doc-math{display:inline-block;vertical-align:middle;margin:0 2px}.doc-math math{font-size:1.05em}
-.doc-empty{color:#8A98AA;font-family:Inter,"Segoe UI",sans-serif;font-size:13px;text-align:center;padding:40px}
-.compact-label{font-size:12px;color:#66758A;font-weight:700;margin:0 0 4px}
-
-/* YOUNGMIX */
-.g-badge{display:inline-block;border-radius:7px;padding:3px 7px;font-size:11px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}
-.g1{background:#EDF8FF;color:#126A9A}.g2{background:#F2EEFF;color:#6743B1}.g3{background:#EAF8F2;color:#0B7A53}.g0{background:#F2F4F7;color:#536174}.g4{background:#FFF3E7;color:#A45B00}
-
-/* OUTPUT */
-.action-card{background:linear-gradient(115deg,#0C315F,#176BCE);border-radius:17px;color:#fff;padding:19px 20px;margin-top:8px}
-.action-card b{font-size:16px}.action-card span{display:block;color:#D8E9FF;font-size:12px;margin-top:4px}
-.result-ok{background:#EAF8F2;border:1px solid #BFE9D7;border-radius:13px;color:#0B6D4B;padding:12px 14px;font-weight:760}
-.footer{text-align:center;color:#97A4B4;font-size:11.5px;margin-top:26px}
-
-@media(max-width:1000px){.flow{grid-template-columns:1fr 1fr}.hero-side{display:none}}
-@media(max-width:620px){.flow{grid-template-columns:1fr}.block-container{padding-left:.75rem;padding-right:.75rem}.hero{padding:20px}.hero-title{font-size:25px}}
+@media(max-width:1000px){{.hero-side{{display:none}}}}
 </style>
 
 <div class="hero">
  <div class="hero-row">
    <div class="hero-icon">🧪</div>
    <div>
-     <div class="hero-title">DTMIX Online <span style="font-size:17px;color:#BFD9FF;font-weight:650">V1.3</span></div>
-     <div class="hero-sub">Trộn đề Word trực tuyến • rà soát cấu trúc • kiểm tra đáp án • YoungMix g1/g2/g3</div>
+     <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700">V1.3</span></div>
+     <div class="hero-sub">Trộn đề Word trực tuyến • rà soát đáp án • YoungMix g1/g2/g3 • xem trước giống Word</div>
      <div class="hero-tags">
        <span class="hero-tag">DOCX</span><span class="hero-tag">PHẦN I–IV</span>
-       <span class="hero-tag">g1 • g2 • g3</span><span class="hero-tag">Xem trước online</span>
-       <span class="hero-tag">ZIP • Word • SmartTest</span>
+       <span class="hero-tag">g1 • g2 • g3</span><span class="hero-tag">Công thức • Hình ảnh • Bảng</span>
      </div>
    </div>
-   <div class="hero-side"><b>Một trang làm việc duy nhất</b><span>Tải đề → Rà soát → Cấu hình → Trộn → Tải về</span></div>
+   <div class="hero-side"><b>Một trang làm việc duy nhất</b><span>Tải đề → Chọn chế độ → Mã đề → Trộn & xuất</span></div>
  </div>
-</div>
-<div class="flow">
- <div class="flow-item"><div class="flow-no">1</div><div><b>Tải đề</b><span>DOCX + chế độ</span></div></div>
- <div class="flow-item"><div class="flow-no">2</div><div><b>Phân tích</b><span>Câu, phần, đáp án</span></div></div>
- <div class="flow-item"><div class="flow-no">3</div><div><b>Xem & rà soát</b><span>Preview online</span></div></div>
- <div class="flow-item"><div class="flow-no">4</div><div><b>Cấu hình trộn</b><span>Tự động / g1 g2 g3</span></div></div>
- <div class="flow-item"><div class="flow-no">5</div><div><b>Xuất đề</b><span>Mã đề + tải kết quả</span></div></div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -223,6 +200,121 @@ def clear_engine() -> None:
             pass
     st.session_state.pop("dtmix_signature", None)
     st.session_state.pop("mix_result", None)
+
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _docx_to_pdf_bytes(file_bytes: bytes, signature: str) -> tuple[bytes | None, str | None]:
+    """Chuyển DOCX -> PDF bằng LibreOffice để giữ công thức, WMF/OLE, ảnh và bố cục."""
+    office = shutil.which("libreoffice") or shutil.which("soffice")
+    if not office:
+        return None, "Máy chủ chưa có LibreOffice."
+    tmp = Path(tempfile.mkdtemp(prefix="dtmix_preview_"))
+    try:
+        src = tmp / "preview.docx"
+        src.write_bytes(file_bytes)
+        cmd = [office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp), str(src)]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=75)
+        pdf = tmp / "preview.pdf"
+        if not pdf.exists():
+            return None, (p.stdout or "Không tạo được PDF xem trước.").strip()
+        return pdf.read_bytes(), None
+    except subprocess.TimeoutExpired:
+        return None, "LibreOffice xử lý quá thời gian cho phép."
+    except Exception as exc:
+        return None, str(exc)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=24)
+def _pdf_page_png(pdf_bytes: bytes, page_index: int, zoom: float = 1.65) -> tuple[bytes | None, int, str | None]:
+    if fitz is None:
+        return None, 0, "Thiếu thư viện PyMuPDF."
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total = doc.page_count
+        if total <= 0:
+            return None, 0, "PDF không có trang."
+        page_index = max(0, min(page_index, total - 1))
+        page = doc.load_page(page_index)
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("png"), total, None
+    except Exception as exc:
+        return None, 0, str(exc)
+
+
+def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
+    """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
+    signature = hashlib.sha256(engine.file_bytes).hexdigest()
+    with st.spinner("Đang dựng bản xem trước Word chính xác..."):
+        pdf_bytes, err = _docx_to_pdf_bytes(engine.file_bytes, signature)
+
+    if pdf_bytes:
+        # Lấy số trang nhẹ nhàng
+        _, total, err2 = _pdf_page_png(pdf_bytes, 0, 1.0)
+        if total:
+            st.session_state.setdefault(f"{key_prefix}_page", 1)
+            current = int(st.session_state.get(f"{key_prefix}_page", 1))
+            current = max(1, min(current, total))
+            st.session_state[f"{key_prefix}_page"] = current
+
+            a, b, c, d = st.columns([.72, 1.15, 1.15, 2.2])
+            if a.button("◀", key=f"{key_prefix}_prev", use_container_width=True, disabled=current <= 1):
+                st.session_state[f"{key_prefix}_page"] = current - 1
+                st.rerun()
+            page_no = b.selectbox(
+                "Trang",
+                list(range(1, total + 1)),
+                index=current - 1,
+                key=f"{key_prefix}_page_select",
+                label_visibility="collapsed",
+            )
+            if int(page_no) != current:
+                st.session_state[f"{key_prefix}_page"] = int(page_no)
+                st.rerun()
+            if c.button("▶", key=f"{key_prefix}_next", use_container_width=True, disabled=current >= total):
+                st.session_state[f"{key_prefix}_page"] = current + 1
+                st.rerun()
+            d.markdown(
+                f'<div class="preview-toolbar"><b>Trang {current}/{total}</b> · Dựng từ Word bằng LibreOffice nên hiển thị tốt công thức Toán/Hóa, ảnh, bảng, WMF/OLE.</div>',
+                unsafe_allow_html=True,
+            )
+            png, _, perr = _pdf_page_png(pdf_bytes, current - 1, 1.7)
+            if png:
+                st.image(png, use_container_width=True)
+                return
+            st.warning(f"Không dựng được ảnh trang: {perr}")
+
+    # Fallback khi môi trường chưa có LibreOffice/PyMuPDF
+    st.warning("Không dùng được bộ dựng Word chính xác. DTMIX chuyển sang chế độ HTML dự phòng.")
+    if err:
+        st.caption(err)
+    show_rich_preview(rich_standard_part_html(engine, None, True), height=780)
+
+
+def compact_codes_ui(prefix: str) -> list[str]:
+    c1, c2 = st.columns([.8, 1.2], gap="small")
+    n = int(c1.number_input("Số đề", 1, 24, 4, step=1, key=f"{prefix}_top_n"))
+    kind = c2.selectbox("Kiểu mã", ["111, 222...", "Liên tiếp", "Thủ công"], key=f"{prefix}_top_kind")
+
+    if kind == "111, 222...":
+        codes = [str(111 * i) for i in range(1, n + 1)]
+        st.text_input("Mã đề", ", ".join(codes), disabled=True, key=f"{prefix}_top_std")
+    elif kind == "Liên tiếp":
+        start = st.text_input("Mã đầu", "101", key=f"{prefix}_top_start")
+        if start.strip().isdigit():
+            first = int(start.strip()); width = len(start.strip())
+            codes = [str(first + i).zfill(width) for i in range(n)]
+            st.caption("→ " + ", ".join(codes))
+        else:
+            codes = []
+            st.caption("⚠ Mã đầu phải là số.")
+    else:
+        raw_codes = st.text_input("Mã đề", "111, 222, 333, 444", key=f"{prefix}_top_manual")
+        codes = [x.strip() for x in re.split(r"[,;\n]+", raw_codes) if x.strip()]
+        st.caption(f"{len(codes)} mã")
+    return codes
 
 
 def esc(s: object) -> str:
@@ -844,27 +936,40 @@ def download_results() -> None:
 
 
 # ============================================================
-# 1 — UPLOAD & SETTINGS
+# 1 — HEADER + TOOLBAR
 # ============================================================
-sec(1, "Đầu đề • File gốc • Chế độ trộn", "Thông tin đầu đề được dàn ngang để tiết kiệm chiều cao; bên dưới là file đề và chế độ xử lý.")
+sec(1, "Đầu đề & thanh trộn nhanh", "Thông tin đầu đề dàn ngang; ngay dưới là Đề gốc → Chế độ xử lý → Mã đề → Trộn & xuất file.")
 
 with st.container(border=True):
-    st.markdown("**📝 Thông tin đầu trang đề**")
-    h1, h2 = st.columns([1, 1], gap="small")
+    title_row, theme_row = st.columns([4.6, 1], gap="small")
+    title_row.markdown("**📝 Thông tin đầu trang đề**")
+    theme_row.selectbox(
+        "Màu giao diện",
+        list(_THEME_PRESETS.keys()),
+        key="ui_theme",
+        label_visibility="collapsed",
+    )
+
+    h1, h2 = st.columns([1.25, 1.25], gap="small")
     h1.text_input("Sở GD&ĐT / Phòng", key="hdr_so")
     h2.text_input("Tên trường", key="hdr_truong")
-    h3, h4, h5, h6 = st.columns([1.15, .9, 1, 1.15], gap="small")
+    h3, h4, h5, h6 = st.columns([1.2, .9, 1.05, 1.15], gap="small")
     h3.text_input("Tên kỳ thi", key="hdr_kythi")
     h4.text_input("Năm học", key="hdr_namhoc")
     h5.text_input("Môn thi", key="hdr_monthi")
     h6.text_input("Thời gian làm bài", key="hdr_thoigian")
 
     st.divider()
-    upload_col, mode_col = st.columns([2.35, 1], gap="large")
-    with upload_col:
+
+    # Bố cục người dùng yêu cầu: Đề gốc | Chế độ | Mã đề | Trộn & xuất
+    file_col, mode_col, code_col, action_col = st.columns([2.2, 1.25, 1.45, 1.0], gap="medium")
+
+    current_sig = None
+    raw = None
+    with file_col:
         st.markdown("**📄 Đề gốc (.docx)**")
         uploaded = st.file_uploader(
-            "Kéo thả hoặc chọn file Word",
+            "Đề gốc",
             type=["docx"],
             accept_multiple_files=False,
             key="source_docx",
@@ -872,63 +977,85 @@ with st.container(border=True):
         )
         if uploaded:
             raw = uploaded.getvalue()
-            f1, f2, f3 = st.columns([2.5, .8, 1])
-            f1.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
-            f2.caption(f"{len(raw)/1024:.1f} KB")
-            f3.caption("Sẵn sàng phân tích")
+            st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
+            st.caption(f"{len(raw)/1024:.1f} KB")
+
     with mode_col:
         st.markdown("**⚙️ Chế độ xử lý**")
         mode = st.radio(
             "Chế độ",
-            [
-                "Tự động PHẦN I / II / III / IV",
-                "YoungMix g1 / g2 / g3 / g4",
-            ],
+            ["Tự động PHẦN I–IV", "YoungMix g1/g2/g3/g4"],
             key="dtmix_mode",
             label_visibility="collapsed",
         )
         is_youngmix = mode.startswith("YoungMix")
-        st.markdown(
-            """
-<div class="mini-help">
-<b>Tự động:</b> đề chuẩn PHẦN I–IV.<br>
-<b>YoungMix:</b> g1 trộn câu • g2 trộn đáp án • g3 trộn cả hai • g4 tự luận.<br>
-Sau khi phân tích sẽ hiện số câu, đáp án, lỗi và bản xem trước đầy đủ.
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+        st.caption("g1: câu • g2: đáp án • g3: cả hai")
 
-    current_sig = None
-    if uploaded:
-        raw = uploaded.getvalue()
+    with code_col:
+        st.markdown("**🏷️ Mã đề**")
+        top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
+
+    # Xác định engine hiện tại có đúng file/chế độ không
+    if raw is not None:
         current_sig = hashlib.sha256(raw + str(is_youngmix).encode()).hexdigest()
-        same = st.session_state.get("dtmix_signature") == current_sig
-        b1, b2 = st.columns([4, 1])
-        if b1.button(
-            "✅ ĐÃ PHÂN TÍCH — XEM KẾT QUẢ BÊN DƯỚI" if same else "🔎 PHÂN TÍCH & RÀ SOÁT ĐỀ",
+    existing_engine = st.session_state.get("dtmix_engine")
+    engine_ready = bool(
+        existing_engine
+        and current_sig
+        and st.session_state.get("dtmix_signature") == current_sig
+    )
+
+    with action_col:
+        st.markdown("**🚀 Thao tác**")
+        analyze_clicked = st.button(
+            "🔎 PHÂN TÍCH ĐỀ",
             type="primary",
             use_container_width=True,
-            disabled=same,
-        ):
-            clear_engine()
-            with st.spinner("DTMIX đang đọc câu hỏi, đáp án, hình ảnh, bảng và công thức Word..."):
-                try:
-                    eng = DTMIXWebEngine(raw, uploaded.name, youngmix=is_youngmix, header=header_values())
-                    st.session_state.dtmix_engine = eng
-                    st.session_state.dtmix_signature = current_sig
-                    st.session_state.mix_result = None
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Không phân tích được đề: {exc}")
-                    with st.expander("Chi tiết lỗi"):
-                        st.exception(exc)
-        if b2.button("↻ Đề khác", use_container_width=True, disabled=not same):
-            clear_engine()
-            st.rerun()
-    else:
-        is_youngmix = st.session_state.get("dtmix_mode", "").startswith("YoungMix")
-        st.info("Chọn một file .docx để bắt đầu.")
+            disabled=(raw is None or engine_ready),
+            key="top_analyze",
+        )
+        mix_clicked = st.button(
+            "🚀 TRỘN & XUẤT",
+            type="primary",
+            use_container_width=True,
+            disabled=not engine_ready,
+            key="top_mix",
+        )
+        if engine_ready:
+            st.caption("✅ Đã phân tích")
+        elif raw is not None:
+            st.caption("Chưa phân tích")
+        else:
+            st.caption("Chọn file DOCX")
+
+        if st.session_state.get("mix_result"):
+            result = st.session_state["mix_result"]
+            st.download_button(
+                "⬇ ZIP KẾT QUẢ",
+                data=result.zip_bytes,
+                file_name=result.zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                key="top_download_zip",
+            )
+
+    if analyze_clicked and raw is not None:
+        clear_engine()
+        with st.spinner("DTMIX đang đọc câu hỏi, đáp án, hình ảnh, bảng và công thức..."):
+            try:
+                eng = DTMIXWebEngine(raw, uploaded.name, youngmix=is_youngmix, header=header_values())
+                st.session_state.dtmix_engine = eng
+                st.session_state.dtmix_signature = current_sig
+                st.session_state.mix_result = None
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Không phân tích được đề: {exc}")
+                with st.expander("Chi tiết lỗi"):
+                    st.exception(exc)
+
+    if mix_clicked:
+        st.session_state["pending_mix"] = True
+        st.session_state["pending_codes"] = top_codes
 
 engine = st.session_state.get("dtmix_engine")
 if current_sig is not None and st.session_state.get("dtmix_signature") != current_sig:
@@ -1006,20 +1133,13 @@ else:
 
         with left:
             with st.container(border=True):
-                st.markdown("#### 👁️ Xem trước đề gốc")
-                p1, p2, p3 = st.columns([1.5, .85, .85])
-                part_options = [(None, "Tất cả các phần")] + [(p["p_idx"], p["title"]) for p in summary["parts"]]
-                selected_idx = p1.selectbox(
-                    "Phần đang xem",
-                    range(len(part_options)),
-                    format_func=lambda i: part_options[i][1],
-                    key="rich_std_part",
+                st.markdown("#### 👁️ Xem trước Word chính xác")
+                st.markdown(
+                    '<div class="word-preview-note"><b>Giải pháp preview mới:</b> DTMIX chuyển DOCX sang PDF bằng LibreOffice rồi dựng từng trang bằng PyMuPDF. '
+                    'Cách này giữ tốt hơn công thức Toán/Hóa, Equation, WMF/OLE, ảnh, bảng và bố cục so với việc tự ghép HTML.</div>',
+                    unsafe_allow_html=True,
                 )
-                show_key = p2.toggle("Hiện đáp án", value=True, key="rich_std_key")
-                p3.caption("70% không gian hiển thị")
-                st.markdown('<div class="word-preview-note">Hình ảnh được lấy trực tiếp từ file Word; công thức Equation/OMML được chuyển sang MathML, còn chỉ số trên/dưới của công thức Hóa được giữ khi xem.</div>', unsafe_allow_html=True)
-                part_idx = part_options[selected_idx][0]
-                show_rich_preview(rich_standard_part_html(engine, part_idx, show_key), height=760)
+                exact_word_preview(engine, "std_exact")
 
         with right:
             with st.container(border=True):
@@ -1083,27 +1203,13 @@ else:
 
         with left:
             with st.container(border=True):
-                st.markdown("#### 👁️ Xem trước YoungMix — nội dung Word thật")
-                choices = [f"{g['name']}  {g['tag']}  · {g['question_count']} câu" for g in groups]
-                c1, c2, c3 = st.columns([1.55, .8, .75])
-                idx = c1.selectbox(
-                    "Nhóm đang xem",
-                    range(len(groups)),
-                    format_func=lambda i: choices[i],
-                    key="ym_rich_group",
-                ) if groups else None
-                show_key = c2.toggle("Hiện đáp án", value=True, key="ym_rich_key")
-                c3.caption("70% không gian hiển thị")
-                st.markdown('<div class="word-preview-note">Không còn hiển thị “[∑ Công thức]” hoặc “[🖼️ Hình ảnh]” thay thế nếu Word chứa dữ liệu đọc được: DTMIX dựng trực tiếp ảnh, bảng và công thức MathML.</div>', unsafe_allow_html=True)
-                if idx is not None:
-                    g = groups[idx]
-                    tag = re.sub(r"[<>#]", "", g.get("tag", "g3")).lower()
-                    st.markdown(
-                        f'<span class="g-badge {tag if tag in ("g0","g1","g2","g3","g4") else "g3"}">{esc(g["tag"])}</span> '
-                        f'<span style="font-size:12px;color:#66758A"><b>{esc(g["name"])}</b> · {esc(g["q_type"])} · {g["question_count"]} câu</span>',
-                        unsafe_allow_html=True,
-                    )
-                    show_rich_preview(rich_youngmix_group_html(engine, idx, show_key), height=760)
+                st.markdown("#### 👁️ Xem trước Word chính xác")
+                st.markdown(
+                    '<div class="word-preview-note"><b>Preview ưu tiên độ trung thực:</b> hiển thị theo trang Word sau khi chuyển PDF, '
+                    'nên công thức, hình ảnh, bảng và các đối tượng OLE/WMF dễ nhìn hơn. Cấu hình g1/g2/g3 vẫn nằm bên phải.</div>',
+                    unsafe_allow_html=True,
+                )
+                exact_word_preview(engine, "ym_exact")
 
         with right:
             with st.container(border=True):
@@ -1154,44 +1260,24 @@ else:
                 ym_config = {"continuous_numbering": continuous, "master_fix": master_fix, "groups": ym_groups_cfg}
 
 # ============================================================
-# 4 — CODES + MIX
+# MIX REQUEST FROM TOP TOOLBAR
 # ============================================================
-sec(4, "Mã đề & trộn đề", "Chọn số lượng đề và cách sinh mã. DTMIX sử dụng thuật toán trộn gốc để tạo file Word kết quả.")
-
-if not engine:
-    with st.container(border=True):
-        st.caption("Khu vực mã đề sẽ hoạt động sau khi đề được phân tích.")
-else:
-    with st.container(border=True):
-        prefix = "ym2" if engine.youngmix else "std2"
-        codes = codes_ui(prefix)
-        st.caption("Tối đa 24 mã đề trong một lần trộn.")
-
-        ready = summary["missing_answers"] == 0
-        status_text = (
-            f"✅ {summary['total_questions']} câu · {len(codes)} mã đề · sẵn sàng trộn"
-            if ready
-            else f"⚠️ {summary['total_questions']} câu · {summary['missing_answers']} câu cần kiểm tra · {len(codes)} mã đề"
-        )
-        st.markdown(
-            f'<div class="{"status-good" if ready else "status-warn"}">{status_text}</div>',
-            unsafe_allow_html=True,
-        )
-        st.write("")
-        if st.button("🚀 TRỘN ĐỀ VÀ XUẤT FILE", type="primary", use_container_width=True, key="mix_now_v2"):
-            if engine.youngmix:
-                run_mix(engine, codes, ym_cfg=ym_config)
-            else:
-                run_mix(engine, codes, std_cfg=std_config)
+if engine and st.session_state.get("pending_mix"):
+    st.session_state["pending_mix"] = False
+    _codes = st.session_state.get("pending_codes", [])
+    if engine.youngmix:
+        run_mix(engine, _codes, ym_cfg=ym_config)
+    else:
+        run_mix(engine, _codes, std_cfg=std_config)
 
 # ============================================================
-# 5 — RESULTS
+# 4 — RESULTS
 # ============================================================
-sec(5, "Kết quả", "Tải toàn bộ bằng ZIP hoặc tải riêng từng mã đề / file đáp án.")
+sec(4, "Kết quả", "Sau khi trộn, tải nhanh ZIP ở thanh trên hoặc tải riêng từng file tại đây.")
 
 if not st.session_state.get("mix_result"):
     with st.container(border=True):
-        st.caption("Sau khi trộn thành công, các nút tải file sẽ xuất hiện tại đây.")
+        st.caption("Chưa có kết quả. Sau khi rà soát/cấu hình, dùng nút **TRỘN & XUẤT** ở thanh trên cùng.")
 else:
     with st.container(border=True):
         download_results()
@@ -1220,6 +1306,6 @@ with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=Fal
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online 1.3 • Giao diện một trang • Thuật toán xử lý Word kế thừa từ DTMIX 1.3</div>',
+    '<div class="footer">DTMIX Online 1.3 • Giao diện sáng • Preview Word chính xác • Thuật toán DTMIX 1.3</div>',
     unsafe_allow_html=True,
 )

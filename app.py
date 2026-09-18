@@ -277,6 +277,13 @@ hr{{margin:.45rem 0!important}}
   font-size:12.5px;line-height:1.35;word-break:break-word;
 }}
 
+
+/* Giá trị trong các ô nhập căn giữa, dễ quan sát trên một hàng */
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input{{
+  text-align:center!important;
+}}
+
 </style>
 
 <div class="hero">
@@ -299,12 +306,21 @@ DEFAULT_HEADER = {
     "so": "SỞ GIÁO DỤC VÀ ĐÀO TẠO THÀNH PHỐ HỒ CHÍ MINH",
     "truong": "TRƯỜNG THPT DƯƠNG BẠCH MAI",
     "kythi": "KIỂM TRA HỌC KỲ II",
-    "namhoc": "NĂM HỌC 2025 - 2026",
+    "namhoc": "NĂM HỌC 2026 - 2027",
     "monthi": "Môn: HÓA HỌC",
     "thoigian": "Thời gian làm bài: 45 phút",
 }
 for _k, _v in DEFAULT_HEADER.items():
     st.session_state.setdefault(f"hdr_{_k}", _v)
+
+# Nâng năm học mặc định của các phiên cũ lên 2026 - 2027.
+if st.session_state.get("hdr_namhoc") in {
+    "NĂM HỌC 2025 - 2026",
+    "NĂM HỌC 2025-2026",
+    "2025 - 2026",
+    "2025-2026",
+}:
+    st.session_state["hdr_namhoc"] = "NĂM HỌC 2026 - 2027"
 
 
 def sec(n: int, title: str, subtitle: str) -> None:
@@ -337,13 +353,111 @@ def _question_number_from_text(raw_text: str, fallback: int) -> int:
     return int(m.group(1)) if m else int(fallback)
 
 
+def _normalize_question_anchor(text_value: str) -> str:
+    """Chuẩn hóa phần đầu câu hỏi để ghép đúng câu trong DOCX."""
+    s = (text_value or "").replace("\uFFFC", " ")
+    s = re.sub(r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\s*[\.\:\)]*\s*", "", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    # 120 ký tự đủ phân biệt các câu nhưng không quá nhạy với công thức/ảnh.
+    return s[:120]
+
+
+def _answer_format_evidence(answer: dict) -> int:
+    """
+    Điểm bằng chứng định dạng trong CHÍNH phương án:
+    - màu đỏ có trọng số cao;
+    - gạch chân tính theo số ký tự.
+    Chỉ dùng làm fallback khi parser trả 0 hoặc >1 đáp án ở Phần I.
+    """
+    red_score = 0
+    underline_score = 0
+    for elm in answer.get("elements", []):
+        try:
+            runs = elm.iter(qn("w:r"))
+        except Exception:
+            continue
+        for run in runs:
+            txt = "".join((t.text or "") for t in run.iter(qn("w:t")))
+            weight = max(1, len(txt.strip()))
+            rpr = run.find(qn("w:rPr"))
+            if rpr is None:
+                continue
+
+            u = rpr.find(qn("w:u"))
+            if u is not None:
+                uval = (u.get(qn("w:val")) or "single").lower()
+                if uval not in ("none", "0", "false"):
+                    underline_score += weight
+
+            color = rpr.find(qn("w:color"))
+            if color is not None:
+                cval = (color.get(qn("w:val")) or "").replace("#", "").upper()
+                if len(cval) == 6:
+                    try:
+                        rr = int(cval[0:2], 16)
+                        gg = int(cval[2:4], 16)
+                        bb = int(cval[4:6], 16)
+                        if rr > 150 and gg < 130 and bb < 130:
+                            red_score += weight
+                    except Exception:
+                        pass
+
+    return red_score * 4 + underline_score
+
+
+def _correct_letters_for_preview(answers: list, q_type: int) -> list[str]:
+    """
+    Chọn đáp án cho PREVIEW.
+    - Phần I: bắt buộc tối đa 1 phương án đỏ.
+    - Phần II: có thể nhiều mệnh đề đúng.
+    - Không tự suy diễn nếu dữ liệu mơ hồ; thà không tô hơn tô sai.
+    """
+    letters = "ABCDEFG"
+    parser_true = [
+        letters[i]
+        for i, ans in enumerate(answers[:len(letters)])
+        if ans.get("is_true")
+    ]
+
+    if q_type != 1:
+        return parser_true
+
+    # Trắc nghiệm nhiều lựa chọn: nếu parser đã xác định duy nhất 1 đáp án, dùng luôn.
+    if len(parser_true) == 1:
+        return parser_true
+
+    # Parser trả 0 hoặc nhiều đáp án: dùng bằng chứng định dạng trong từng phương án.
+    scores = [_answer_format_evidence(ans) for ans in answers[:len(letters)]]
+    if not scores:
+        return []
+
+    best = max(scores)
+    if best <= 0:
+        return []
+
+    winners = [i for i, score in enumerate(scores) if score == best]
+
+    # Chỉ tô khi có một phương án nổi bật duy nhất.
+    if len(winners) == 1:
+        return [letters[winners[0]]]
+
+    # Nếu đồng điểm nhưng parser có đúng 1 phương án nằm trong nhóm đồng điểm, dùng nó.
+    if len(parser_true) == 1:
+        idx = letters.index(parser_true[0])
+        if idx in winners:
+            return parser_true
+
+    # Mơ hồ => không tô đỏ để tránh tô sai.
+    return []
+
+
 def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
     """
-    Tạo bản đồ đáp án từ CHÍNH dữ liệu DTMIX đã parse.
-    Preview không còn suy đoán đáp án từ màu/gạch chân của toàn đoạn Word.
+    Bản đồ câu/đáp án dùng riêng cho xem trước.
+    Mỗi câu có anchor nội dung để DOCX preview ghép đúng câu, tránh nhầm khi
+    số câu lặp lại giữa PHẦN I / II / III.
     """
     spec = {"youngmix": bool(engine.youngmix), "parts": [], "groups": []}
-    letters = "ABCDEFG"
 
     if not engine.youngmix:
         for p_idx, part in enumerate(engine.app.parsed_data.get("parts", [])):
@@ -355,17 +469,26 @@ def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
                     if q.get("is_virtual"):
                         continue
                     q_seq += 1
+                    raw = q.get("raw_text", "")
                     answers = q.get("answers", [])
-                    correct = [letters[i] for i, a in enumerate(answers[:len(letters)]) if a.get("is_true")]
                     questions.append({
-                        "number": _question_number_from_text(q.get("raw_text", ""), q_seq),
-                        "correct_letters": correct,
+                        "number": _question_number_from_text(raw, q_seq),
+                        "anchor": _normalize_question_anchor(raw),
+                        "correct_letters": _correct_letters_for_preview(answers, p_type),
                         "q_type": p_type,
                         "short_answer": extract_short_answer(engine, q) if p_type == 3 else "",
                     })
-            spec["parts"].append({"p_idx": p_idx, "type": p_type, "questions": questions})
+            spec["parts"].append({
+                "p_idx": p_idx,
+                "type": p_type,
+                "questions": questions,
+            })
     else:
-        all_mucs = [m for p in engine.app.parsed_data.get("parts", []) for m in p.get("mucs", [])]
+        all_mucs = [
+            m
+            for p in engine.app.parsed_data.get("parts", [])
+            for m in p.get("mucs", [])
+        ]
         for g_idx, muc in enumerate(all_mucs):
             q_seq = 0
             questions = []
@@ -374,15 +497,19 @@ def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
                     continue
                 q_seq += 1
                 q_type = int(q.get("ym_type", 1) or 1)
+                raw = q.get("raw_text", "")
                 answers = q.get("answers", [])
-                correct = [letters[i] for i, a in enumerate(answers[:len(letters)]) if a.get("is_true")]
                 questions.append({
-                    "number": _question_number_from_text(q.get("raw_text", ""), q_seq),
-                    "correct_letters": correct,
+                    "number": _question_number_from_text(raw, q_seq),
+                    "anchor": _normalize_question_anchor(raw),
+                    "correct_letters": _correct_letters_for_preview(answers, q_type),
                     "q_type": q_type,
                     "short_answer": extract_short_answer(engine, q) if q_type == 3 else "",
                 })
-            spec["groups"].append({"g_idx": g_idx, "questions": questions})
+            spec["groups"].append({
+                "g_idx": g_idx,
+                "questions": questions,
+            })
     return spec
 
 
@@ -493,19 +620,75 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
                 parent.insert(pos+off, nr)
             parent.remove(run)
 
-    def _lookup_question_by_seq(mode, unit_idx, seq_idx):
-        """
-        Lấy câu theo THỨ TỰ xuất hiện trong phần/nhóm.
-        Không dùng số câu in trên đề vì số câu có thể lặp lại khi sang PHẦN II/III
-        hoặc đề gốc đánh số không liên tục.
-        """
+    def _normalize_preview_anchor(text_value):
+        s = (text_value or "").replace("\uFFFC", " ")
+        s = re.sub(r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\s*[\.\:\)]*\s*", "", s)
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s[:120]
+
+    def _all_question_specs(mode):
         units = spec.get("groups" if mode == "ym" else "parts", [])
-        if not units:
-            return None
-        unit_idx = max(0, min(unit_idx, len(units) - 1))
-        qs = units[unit_idx].get("questions", [])
-        if 0 <= seq_idx < len(qs):
-            return qs[seq_idx]
+        flat = []
+        for unit_idx, unit in enumerate(units):
+            for seq_idx, q in enumerate(unit.get("questions", [])):
+                item = dict(q)
+                item["_unit_idx"] = unit_idx
+                item["_seq_idx"] = seq_idx
+                flat.append(item)
+        return flat
+
+    def _lookup_question_by_anchor(mode, unit_idx, seq_idx, paragraph_text, used_keys):
+        """
+        Ưu tiên ghép bằng chính nội dung câu hỏi, sau đó mới fallback theo thứ tự.
+        Điều này loại lỗi lấy nhầm đáp án của câu khác/phần khác.
+        """
+        p_anchor = _normalize_preview_anchor(paragraph_text)
+        candidates = _all_question_specs(mode)
+
+        # Ưu tiên đúng unit trước.
+        ordered = [q for q in candidates if q["_unit_idx"] == unit_idx]
+        ordered += [q for q in candidates if q["_unit_idx"] != unit_idx]
+
+        best = None
+        best_score = -1
+
+        for q in ordered:
+            key = (q["_unit_idx"], q["_seq_idx"])
+            if key in used_keys:
+                continue
+            anchor = q.get("anchor", "")
+            if not anchor or not p_anchor:
+                continue
+
+            # exact prefix / containment rất đáng tin vì raw_text được lấy từ cùng DOCX.
+            if p_anchor.startswith(anchor[:60]) or anchor.startswith(p_anchor[:60]):
+                score = 1000 + min(len(anchor), len(p_anchor))
+            elif anchor[:45] and anchor[:45] in p_anchor:
+                score = 900 + len(anchor[:45])
+            else:
+                # điểm giao nhau theo token, chỉ dùng để hỗ trợ.
+                at = set(re.findall(r"\w+", anchor))
+                pt = set(re.findall(r"\w+", p_anchor))
+                score = int(100 * len(at & pt) / max(1, len(at | pt)))
+
+            if score > best_score:
+                best_score = score
+                best = q
+
+        # Chỉ nhận fuzzy nếu khá chắc.
+        if best is not None and best_score >= 55:
+            return best
+
+        # Fallback đúng unit + đúng thứ tự.
+        units = spec.get("groups" if mode == "ym" else "parts", [])
+        if units:
+            unit_idx = max(0, min(unit_idx, len(units) - 1))
+            qs = units[unit_idx].get("questions", [])
+            if 0 <= seq_idx < len(qs):
+                item = dict(qs[seq_idx])
+                item["_unit_idx"] = unit_idx
+                item["_seq_idx"] = seq_idx
+                return item
         return None
 
     def _annotate_document_xml(xml_bytes):
@@ -529,6 +712,7 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
         question_seq = -1
         current_question = None
         seen_ym_tag = False
+        used_question_keys = set()
         roman_map = {"I": 0, "II": 1, "III": 2, "IV": 3}
 
         # Chỉ coi là câu hỏi khi "Câu n" nằm ở ĐẦU đoạn.
@@ -575,12 +759,29 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
             # ----- Bắt đầu câu mới theo thứ tự xuất hiện -----
             if question_heading_re.search(full):
                 question_seq += 1
-                current_question = _lookup_question_by_seq(mode, current_unit, question_seq)
+                current_question = _lookup_question_by_anchor(
+                    mode,
+                    current_unit,
+                    question_seq,
+                    full,
+                    used_question_keys,
+                )
+                if current_question:
+                    used_question_keys.add((
+                        current_question.get("_unit_idx", current_unit),
+                        current_question.get("_seq_idx", question_seq),
+                    ))
 
             if not current_question:
                 continue
 
-            correct = set(current_question.get("correct_letters", []))
+            correct_list = list(current_question.get("correct_letters", []))
+            q_type_now = int(current_question.get("q_type", 0) or 0)
+
+            # PHẦN I là trắc nghiệm một lựa chọn: preview không bao giờ được tô >1 đáp án.
+            if q_type_now == 1 and len(correct_list) > 1:
+                correct_list = []
+            correct = set(correct_list)
 
             # ----- Trắc nghiệm / Đúng-Sai -----
             # Nhận cả A. B. C. D. và a) b) c) d), nhưng chỉ tô đỏ nếu parsed_data nói là đúng.

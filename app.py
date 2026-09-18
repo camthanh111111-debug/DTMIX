@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import html
 import io
@@ -254,6 +255,21 @@ hr{{margin:.45rem 0!important}}
   border:1px solid #C8ECDD;color:#137A5A;font-size:12px;font-weight:750;
 }}
 
+
+/* Phân tích chi tiết đề / nhóm đặt phía trên preview */
+.analysis-detail-grid{{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:7px;margin:5px 0 9px}}
+.analysis-card{{background:#fff;border:1px solid #DCE7F3;border-radius:11px;padding:8px 10px;min-height:74px}}
+.analysis-card-title{{font-size:13.5px;font-weight:850;color:#173B65;line-height:1.3}}
+.analysis-card-meta{{font-size:12.5px;color:#40566F;margin-top:4px;line-height:1.45}}
+.analysis-card-ok{{font-size:12px;color:#137A5A;font-weight:800;margin-top:5px}}
+.analysis-card-bad{{font-size:12px;color:#B33E35;font-weight:800;margin-top:5px}}
+/* YoungMix cấu hình luôn mở theo hàng ngang */
+.ym-config-head{{font-size:17px;font-weight:850;color:#173B65;margin:6px 0 5px}}
+.ym-config-note{{font-size:12px;color:#6C8097;margin-bottom:6px}}
+.preview-side-title{{font-size:15px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.preview-side-box{{background:#F8FBFF;border:1px solid #DCE7F3;border-radius:10px;padding:8px 9px;font-size:12.5px;color:#526A83;line-height:1.5}}
+@media(max-width:1200px){{.analysis-detail-grid{{grid-template-columns:repeat(2,1fr)}}}}
+
 </style>
 
 <div class="hero">
@@ -309,202 +325,294 @@ def clear_engine() -> None:
 
 
 
-@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
-def _prepare_browser_preview_docx(file_bytes: bytes, signature: str) -> tuple[bytes, dict]:
+def _question_number_from_text(raw_text: str, fallback: int) -> int:
+    m = re.search(r"(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)", raw_text or "")
+    return int(m.group(1)) if m else int(fallback)
+
+
+def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
     """
-    Tạo DOCX chỉ phục vụ XEM TRƯỚC:
-      - tô đỏ số câu;
-      - tô đỏ đáp án được nhận diện từ gạch chân/màu đỏ trong file gốc;
-      - tô đỏ dòng trả lời ngắn "Đáp án:";
-      - giữ nguyên file gốc để trộn;
-      - thử chuyển WMF/EMF legacy sang PNG nếu máy chủ hỗ trợ.
+    Tạo bản đồ đáp án từ CHÍNH dữ liệu DTMIX đã parse.
+    Preview không còn suy đoán đáp án từ màu/gạch chân của toàn đoạn Word.
+    """
+    spec = {"youngmix": bool(engine.youngmix), "parts": [], "groups": []}
+    letters = "ABCDEFG"
+
+    if not engine.youngmix:
+        for p_idx, part in enumerate(engine.app.parsed_data.get("parts", [])):
+            p_type = int(part.get("type", 1))
+            q_seq = 0
+            questions = []
+            for muc in part.get("mucs", []):
+                for q in muc.get("questions", []):
+                    if q.get("is_virtual"):
+                        continue
+                    q_seq += 1
+                    answers = q.get("answers", [])
+                    correct = [letters[i] for i, a in enumerate(answers[:len(letters)]) if a.get("is_true")]
+                    questions.append({
+                        "number": _question_number_from_text(q.get("raw_text", ""), q_seq),
+                        "correct_letters": correct,
+                        "q_type": p_type,
+                        "short_answer": extract_short_answer(engine, q) if p_type == 3 else "",
+                    })
+            spec["parts"].append({"p_idx": p_idx, "type": p_type, "questions": questions})
+    else:
+        all_mucs = [m for p in engine.app.parsed_data.get("parts", []) for m in p.get("mucs", [])]
+        for g_idx, muc in enumerate(all_mucs):
+            q_seq = 0
+            questions = []
+            for q in muc.get("questions", []):
+                if q.get("is_virtual"):
+                    continue
+                q_seq += 1
+                q_type = int(q.get("ym_type", 1) or 1)
+                answers = q.get("answers", [])
+                correct = [letters[i] for i, a in enumerate(answers[:len(letters)]) if a.get("is_true")]
+                questions.append({
+                    "number": _question_number_from_text(q.get("raw_text", ""), q_seq),
+                    "correct_letters": correct,
+                    "q_type": q_type,
+                    "short_answer": extract_short_answer(engine, q) if q_type == 3 else "",
+                })
+            spec["groups"].append({"g_idx": g_idx, "questions": questions})
+    return spec
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_json: str = "") -> tuple[bytes, dict]:
+    """
+    Tạo DOCX CHỈ phục vụ preview.
+    Điểm quan trọng: đáp án đỏ lấy từ parsed_data của DTMIX, không tô theo heuristic
+    "đoạn nào có chữ đỏ/gạch chân thì cả phương án đỏ" như các bản trước.
     """
     W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    XML = "http://www.w3.org/XML/1998/namespace"
     NS = {"w": W}
-    stats = {
-        "converted_wmf_emf": 0,
-        "wmf_emf_total": 0,
-        "question_marks": 0,
-        "answer_marks": 0,
-    }
+    stats = {"converted_wmf_emf": 0, "wmf_emf_total": 0, "answer_marks": 0}
+    try:
+        spec = json.loads(annotation_json) if annotation_json else {"youngmix": False, "parts": [], "groups": []}
+    except Exception:
+        spec = {"youngmix": False, "parts": [], "groups": []}
 
     def _run_text(run):
         return "".join((t.text or "") for t in run.xpath(".//w:t", namespaces=NS))
 
-    def _is_red_hex(val):
-        if not val:
-            return False
-        val = str(val).replace("#", "").strip()
-        if len(val) != 6:
-            return False
-        try:
-            rr = int(val[0:2], 16)
-            gg = int(val[2:4], 16)
-            bb = int(val[4:6], 16)
-            return rr > 150 and gg < 120 and bb < 120
-        except Exception:
-            return False
-
-    def _run_was_answer_marked(run):
-        rpr = run.find(f"{{{W}}}rPr")
-        if rpr is None:
-            return False
-        underline = rpr.find(f"{{{W}}}u")
-        if underline is not None:
-            val = underline.get(f"{{{W}}}val", "single")
-            if str(val).lower() not in ("none", "0", "false"):
-                return True
-        color = rpr.find(f"{{{W}}}color")
-        if color is not None and _is_red_hex(color.get(f"{{{W}}}val")):
-            return True
-        return False
-
-    def _set_run_red(run, bold=False):
+    def _ensure_rpr(run):
         rpr = run.find(f"{{{W}}}rPr")
         if rpr is None:
             rpr = etree.Element(f"{{{W}}}rPr")
             run.insert(0, rpr)
+        return rpr
+
+    def _set_color(run, value):
+        rpr = _ensure_rpr(run)
         color = rpr.find(f"{{{W}}}color")
         if color is None:
             color = etree.SubElement(rpr, f"{{{W}}}color")
-        color.set(f"{{{W}}}val", "FF0000")
+        color.set(f"{{{W}}}val", value)
         for attr in ("themeColor", "themeTint", "themeShade"):
             color.attrib.pop(f"{{{W}}}{attr}", None)
-        if bold:
-            bnode = rpr.find(f"{{{W}}}b")
-            if bnode is None:
-                bnode = etree.SubElement(rpr, f"{{{W}}}b")
-            bnode.set(f"{{{W}}}val", "1")
 
-    def _mark_overlapping_runs(infos, start_pos, end_pos, bold=False):
-        for run, a, b, _txt, _marked in infos:
-            if b > start_pos and a < end_pos:
-                _set_run_red(run, bold=bold)
+    def _neutralize_existing_red(root):
+        # Preview theo quy ước mới: chỉ đáp án DTMIX nhận diện được phép màu đỏ.
+        for color in root.xpath('.//w:rPr/w:color', namespaces=NS):
+            val = (color.get(f"{{{W}}}val") or "").replace("#", "").upper()
+            if len(val) == 6:
+                try:
+                    rr, gg, bb = int(val[:2],16), int(val[2:4],16), int(val[4:],16)
+                    if rr > 150 and gg < 130 and bb < 130:
+                        color.set(f"{{{W}}}val", "000000")
+                        for attr in ("themeColor", "themeTint", "themeShade"):
+                            color.attrib.pop(f"{{{W}}}{attr}", None)
+                except Exception:
+                    pass
+
+    def _simple_text_run(run):
+        # Chỉ split run thuần text; run có drawing/object/math thì giữ nguyên để tránh hỏng công thức/ảnh.
+        allowed = {f"{{{W}}}rPr", f"{{{W}}}t"}
+        return all(ch.tag in allowed for ch in list(run)) and bool(run.xpath('./w:t', namespaces=NS))
+
+    def _clone_text_run(run, txt, color=None):
+        nr = copy.deepcopy(run)
+        for t in nr.xpath('.//w:t', namespaces=NS):
+            parent = t.getparent()
+            parent.remove(t)
+        nt = etree.Element(f"{{{W}}}t")
+        if txt.startswith(' ') or txt.endswith(' '):
+            nt.set(f"{{{XML}}}space", "preserve")
+        nt.text = txt
+        nr.append(nt)
+        if color:
+            _set_color(nr, color)
+        return nr
+
+    def _apply_option_intervals(p, infos, intervals):
+        # intervals: [(start,end,'FF0000'/'000000')]. Xử lý một lần để không tô cả run
+        # khi nhiều phương án A/B/C/D cùng nằm chung một run Word.
+        for run, rs, re_, txt in list(infos):
+            hits = []
+            for a,b,color in intervals:
+                if b > rs and a < re_:
+                    hits.append((max(a,rs)-rs, min(b,re_)-rs, color))
+            if not hits:
+                continue
+            if not _simple_text_run(run):
+                # Nếu run phức tạp nhưng nằm trọn trong một phương án, đổi màu được an toàn.
+                full = [h for h in hits if h[0] <= 0 and h[1] >= len(txt)]
+                if full:
+                    _set_color(run, full[-1][2])
+                continue
+            bounds = {0, len(txt)}
+            for a,b,_ in hits:
+                bounds.add(max(0,a)); bounds.add(min(len(txt),b))
+            bounds = sorted(bounds)
+            parent = run.getparent()
+            if parent is None:
+                continue
+            pos = parent.index(run)
+            pieces = []
+            for i in range(len(bounds)-1):
+                a,b = bounds[i], bounds[i+1]
+                if b <= a: continue
+                piece = txt[a:b]
+                color = None
+                mid = (a+b)/2
+                for ia,ib,ic in hits:
+                    if ia <= mid < ib:
+                        color = ic
+                pieces.append(_clone_text_run(run, piece, color))
+            for off,nr in enumerate(pieces):
+                parent.insert(pos+off, nr)
+            parent.remove(run)
+
+    def _lookup_question(mode, unit_idx, qnum):
+        units = spec.get("groups" if mode == "ym" else "parts", [])
+        if not units:
+            return None
+        unit_idx = max(0, min(unit_idx, len(units)-1))
+        qs = units[unit_idx].get("questions", [])
+        for q in qs:
+            if int(q.get("number", -1)) == int(qnum):
+                return q
+        return None
 
     def _annotate_document_xml(xml_bytes):
         try:
             root = etree.fromstring(xml_bytes)
         except Exception:
             return xml_bytes
+        _neutralize_existing_red(root)
 
-        for p in root.xpath(".//w:p", namespaces=NS):
-            runs = p.xpath(".//w:r", namespaces=NS)
-            infos = []
-            pos = 0
+        mode = "ym" if spec.get("youngmix") else "std"
+        current_unit = 0
+        current_question = None
+        seen_ym_tag = False
+        roman_map = {"I":0, "II":1, "III":2, "IV":3}
+
+        for p in root.xpath('.//w:p', namespaces=NS):
+            runs = p.xpath('./w:r', namespaces=NS)
+            infos=[]; pos=0
             for run in runs:
-                txt = _run_text(run)
-                if not txt:
-                    continue
-                infos.append((run, pos, pos + len(txt), txt, _run_was_answer_marked(run)))
-                pos += len(txt)
-
-            if not infos:
-                continue
-
-            full = "".join(item[3] for item in infos)
+                txt=_run_text(run)
+                if txt:
+                    infos.append((run,pos,pos+len(txt),txt)); pos += len(txt)
+            full=''.join(x[3] for x in infos)
             if not full.strip():
                 continue
 
-            # Ghi nhớ format đáp án gốc trước khi tô đỏ số câu.
-            marked_ranges = [(a, b) for _run, a, b, _txt, marked in infos if marked]
+            if mode == 'std':
+                pm = re.search(r'(?i)\bPHẦN\s+(IV|III|II|I)\b', full)
+                if pm:
+                    candidate = roman_map.get(pm.group(1).upper(), current_unit)
+                    if candidate < len(spec.get('parts', [])):
+                        current_unit = candidate
+                        current_question = None
+            else:
+                # Mỗi thẻ <g0>...<g4>, <#g3> mở một nhóm mới theo thứ tự parse.
+                if re.search(r'(?i)<\s*#?g[0-4]\s*>', full):
+                    if seen_ym_tag:
+                        current_unit = min(current_unit + 1, max(0, len(spec.get('groups', []))-1))
+                    else:
+                        seen_ym_tag = True
+                        current_unit = 0
+                    current_question = None
 
-            # Tô đỏ toàn bộ phương án mà DTMIX nhận diện là đúng.
-            option_marks = list(re.finditer(
-                r"(?i)(?:^|[\s\u00A0\u200B\uFFFC])(#?[A-Ga-g][\.\)])",
-                full,
-            ))
-            starts = [m.start(1) for m in option_marks]
-            for i, seg_start in enumerate(starts):
-                seg_end = starts[i + 1] if i + 1 < len(starts) else len(full)
-                recognized = any(b > seg_start and a < seg_end for a, b in marked_ranges)
-                if recognized:
-                    _mark_overlapping_runs(infos, seg_start, seg_end, bold=False)
-                    stats["answer_marks"] += 1
+            qm = re.search(r'(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)', full)
+            if qm:
+                current_question = _lookup_question(mode, current_unit, int(qm.group(1)))
 
-            # Trả lời ngắn.
-            if re.search(r"(?i)\bđáp\s*án\s*[:\.]", full):
-                for run, *_ in infos:
-                    _set_run_red(run, bold=False)
-                stats["answer_marks"] += 1
-            elif (
-                re.search(r"(?i)^\s*A\.\s*[-+]?\d", full)
-                and not re.search(r"(?i)(?:^|\s)B\.", full)
-            ):
-                for run, *_ in infos:
-                    _set_run_red(run, bold=False)
-                stats["answer_marks"] += 1
+            if not current_question:
+                continue
 
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone="yes")
+            correct = set(current_question.get('correct_letters', []))
+            # Chỉ xử lý đoạn có marker A./B./C./D...; các chữ đỏ khác đã được đưa về đen.
+            marks = list(re.finditer(r'(?i)(?:^|[\s\u00A0\u200B\uFFFC])#?([A-G])[\.\)]', full))
+            if marks:
+                intervals=[]
+                for i,m in enumerate(marks):
+                    # start tại ký tự chữ cái để không ăn vào khoảng trắng trước marker
+                    seg_start = m.start(1)
+                    seg_end = marks[i+1].start(1) if i+1 < len(marks) else len(full)
+                    letter = m.group(1).upper()
+                    intervals.append((seg_start, seg_end, 'FF0000' if letter in correct else '000000'))
+                    if letter in correct:
+                        stats['answer_marks'] += 1
+                _apply_option_intervals(p, infos, intervals)
+                continue
+
+            # Trả lời ngắn: chỉ tô dòng chứa đáp án của câu loại 3.
+            if int(current_question.get('q_type', 0) or 0) == 3:
+                if re.search(r'(?i)\bđáp\s*án\s*[:\.]', full) or re.search(r'(?i)^\s*A\.\s*[-+]?\d', full):
+                    for run, *_ in infos:
+                        _set_color(run, 'FF0000')
+                    stats['answer_marks'] += 1
+
+        return etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone='yes')
 
     try:
-        zin = zipfile.ZipFile(io.BytesIO(file_bytes), "r")
-        infos_zip = zin.infolist()
-        entries = {info.filename: zin.read(info.filename) for info in infos_zip}
+        zin=zipfile.ZipFile(io.BytesIO(file_bytes),'r')
+        infos_zip=zin.infolist()
+        entries={info.filename: zin.read(info.filename) for info in infos_zip}
         zin.close()
+        if 'word/document.xml' in entries:
+            entries['word/document.xml']=_annotate_document_xml(entries['word/document.xml'])
 
-        if "word/document.xml" in entries:
-            entries["word/document.xml"] = _annotate_document_xml(entries["word/document.xml"])
-
-        legacy = [
-            name for name in entries
-            if name.lower().startswith("word/media/")
-            and name.lower().endswith((".wmf", ".emf"))
-        ]
-        stats["wmf_emf_total"] = len(legacy)
-
-        converter = shutil.which("magick") or shutil.which("convert")
+        legacy=[n for n in entries if n.lower().startswith('word/media/') and n.lower().endswith(('.wmf','.emf'))]
+        stats['wmf_emf_total']=len(legacy)
+        converter=shutil.which('magick') or shutil.which('convert')
         if legacy and converter:
-            temp_root = Path(tempfile.mkdtemp(prefix="dtmix_vec_"))
+            temp_root=Path(tempfile.mkdtemp(prefix='dtmix_vec_'))
             try:
-                for idx, name in enumerate(legacy):
-                    ext = Path(name).suffix.lower()
-                    srcf = temp_root / f"source_{idx}{ext}"
-                    dstf = temp_root / f"result_{idx}.png"
+                for idx,name in enumerate(legacy):
+                    ext=Path(name).suffix.lower(); srcf=temp_root/f'source_{idx}{ext}'; dstf=temp_root/f'result_{idx}.png'
                     srcf.write_bytes(entries[name])
                     try:
-                        subprocess.run(
-                            [converter, str(srcf), str(dstf)],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            timeout=20,
-                        )
-                        if dstf.exists() and dstf.stat().st_size > 32:
-                            entries[name] = dstf.read_bytes()
-                            stats["converted_wmf_emf"] += 1
+                        subprocess.run([converter,str(srcf),str(dstf)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20)
+                        if dstf.exists() and dstf.stat().st_size>32:
+                            entries[name]=dstf.read_bytes(); stats['converted_wmf_emf']+=1
                     except Exception:
                         pass
             finally:
-                shutil.rmtree(temp_root, ignore_errors=True)
-
-            if stats["converted_wmf_emf"] and "[Content_Types].xml" in entries:
+                shutil.rmtree(temp_root,ignore_errors=True)
+            if stats['converted_wmf_emf'] and '[Content_Types].xml' in entries:
                 try:
-                    ct_root = etree.fromstring(entries["[Content_Types].xml"])
-                    for node in ct_root:
-                        ext = (node.get("Extension") or "").lower()
-                        if ext in ("wmf", "emf"):
-                            node.set("ContentType", "image/png")
-                    entries["[Content_Types].xml"] = etree.tostring(
-                        ct_root,
-                        xml_declaration=True,
-                        encoding="UTF-8",
-                        standalone="yes",
-                    )
-                except Exception:
-                    pass
+                    ct=etree.fromstring(entries['[Content_Types].xml'])
+                    for node in ct:
+                        if (node.get('Extension') or '').lower() in ('wmf','emf'):
+                            node.set('ContentType','image/png')
+                    entries['[Content_Types].xml']=etree.tostring(ct,xml_declaration=True,encoding='UTF-8',standalone='yes')
+                except Exception: pass
 
-        out_io = io.BytesIO()
-        with zipfile.ZipFile(out_io, "w", zipfile.ZIP_DEFLATED) as zout:
-            seen = set()
+        out_io=io.BytesIO()
+        with zipfile.ZipFile(out_io,'w',zipfile.ZIP_DEFLATED) as zout:
+            seen=set()
             for info in infos_zip:
                 if info.filename in entries:
-                    zout.writestr(info, entries[info.filename])
-                    seen.add(info.filename)
-            for name, data in entries.items():
-                if name not in seen:
-                    zout.writestr(name, data)
-
+                    zout.writestr(info,entries[info.filename]); seen.add(info.filename)
+            for name,data in entries.items():
+                if name not in seen: zout.writestr(name,data)
         return out_io.getvalue(), stats
-
     except Exception:
         return file_bytes, stats
 
@@ -519,16 +627,17 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
     """
     sig = hashlib.sha256(engine.file_bytes).hexdigest()
-    preview_bytes, stats = _prepare_browser_preview_docx(engine.file_bytes, sig)
+    annotation_json = json.dumps(build_answer_annotation_spec(engine), ensure_ascii=False, sort_keys=True)
+    preview_bytes, stats = _prepare_browser_preview_docx(engine.file_bytes, sig, annotation_json)
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
 
-    conversion_note = f" • đã tô đỏ {stats.get('answer_marks', 0)} đáp án đúng DTMIX nhận diện"
+    conversion_note = f" • tô đỏ {stats.get('answer_marks', 0)} đáp án DTMIX đã nhận diện"
     if stats.get("wmf_emf_total", 0):
         if stats.get("converted_wmf_emf", 0):
-            conversion_note = f" • đã chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} ảnh WMF/EMF sang PNG"
+            conversion_note += f" • chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} WMF/EMF sang PNG"
         else:
-            conversion_note = f" • phát hiện {stats['wmf_emf_total']} đối tượng WMF/EMF legacy"
+            conversion_note += f" • có {stats['wmf_emf_total']} WMF/EMF legacy"
 
     html_doc = f"""
 <!doctype html>
@@ -673,7 +782,8 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
     signature = hashlib.sha256(engine.file_bytes).hexdigest()
     with st.spinner("Đang dựng bản xem trước Word chính xác..."):
-        annotated_bytes, _stats = _prepare_browser_preview_docx(engine.file_bytes, signature)
+        annotation_json = json.dumps(build_answer_annotation_spec(engine), ensure_ascii=False, sort_keys=True)
+        annotated_bytes, _stats = _prepare_browser_preview_docx(engine.file_bytes, signature, annotation_json)
         pdf_bytes, err = _docx_to_pdf_bytes(annotated_bytes, signature + "_annotated")
 
     if pdf_bytes:
@@ -1516,360 +1626,166 @@ if current_sig is not None and st.session_state.get("dtmix_signature") != curren
     engine = None
 
 # ============================================================
-# TỔNG QUAN GỌN
+# PHÂN TÍCH CHI TIẾT ĐỀ + CẤU HÌNH (ĐẶT TRÊN PREVIEW)
 # ============================================================
+std_config = None
+ym_config = None
+
+
+def _summary_question_label(q: dict, fallback: int) -> str:
+    raw = q.get("raw_text", "") or ""
+    m = re.search(r"(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)", raw)
+    return m.group(1) if m else str(fallback)
+
+
 if engine:
     summary = engine.summary()
     parts = summary.get("parts", [])
-
     unit_count = len(summary.get("youngmix_groups", [])) if engine.youngmix else len(parts)
-    answer_text = f'{summary["valid_answers"]}/{summary["total_questions"]}'
-    need_check = summary["missing_answers"]
-
     st.markdown(
         f"""
 <div class="summary-compact">
-  <div class="summary-chip"><div class="v">{unit_count}</div><div class="l">Phần / nhóm</div></div>
+  <div class="summary-chip"><div class="v">{unit_count}</div><div class="l">Phần / nhóm nhận diện</div></div>
   <div class="summary-chip"><div class="v">{summary["total_questions"]}</div><div class="l">Tổng số câu</div></div>
-  <div class="summary-chip"><div class="v">{answer_text}</div><div class="l">Đã có đáp án / hợp lệ</div></div>
-  <div class="summary-chip"><div class="v">{need_check}</div><div class="l">Câu cần kiểm tra</div></div>
+  <div class="summary-chip"><div class="v">{summary["valid_answers"]}/{summary["total_questions"]}</div><div class="l">Câu đã có đáp án / hợp lệ</div></div>
+  <div class="summary-chip"><div class="v">{summary["missing_answers"]}</div><div class="l">Câu còn thiếu đáp án</div></div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    cards = []
+    # -------- PHÂN TÍCH CHI TIẾT: luôn nằm trên xem trước --------
+    detail_cards = []
     if not engine.youngmix:
-        roman = {1: "PHẦN I", 2: "PHẦN II", 3: "PHẦN III", 4: "PHẦN IV"}
+        roman = {1:"PHẦN I",2:"PHẦN II",3:"PHẦN III",4:"PHẦN IV"}
         for part in parts:
-            short_name = roman.get(part.get("type"), f'PHẦN {part.get("type")}')
             total = part["question_count"]
             valid = part["valid_count"]
-            missing = part["missing_count"]
-            cls = "ans-ok" if missing == 0 else "ans-bad"
-            ans = f"Đáp án {valid}/{total} ✓" if missing == 0 else f"Đáp án {valid}/{total} • thiếu {missing}"
-            cards.append(
-                f'<div class="part-status-card" title="{esc(part.get("title",""))}">'
-                f'<div><div class="pn">{short_name}</div><div class="qc">{total} câu</div></div>'
-                f'<div class="{cls}">{ans}</div></div>'
-            )
-    else:
-        flat_groups = []
-        for part in parts:
+            missing_labels = []
+            seq = 0
             for g in part.get("groups", []):
-                valid = sum(1 for q in g.get("questions", []) if q.get("valid_answer"))
-                flat_groups.append((g["question_count"], valid))
-        for i, g in enumerate(summary.get("youngmix_groups", [])):
-            total = g["question_count"]
-            valid = flat_groups[i][1] if i < len(flat_groups) else total
-            missing = max(0, total - valid)
-            cls = "ans-ok" if missing == 0 else "ans-bad"
-            ans = f"Đáp án {valid}/{total} ✓" if missing == 0 else f"Đáp án {valid}/{total} • thiếu {missing}"
-            cards.append(
-                f'<div class="part-status-card">'
-                f'<div><div class="pn">{esc(g["name"])} {esc(g["tag"])}</div><div class="qc">{total} câu</div></div>'
-                f'<div class="{cls}">{ans}</div></div>'
+                for q in g.get("questions", []):
+                    seq += 1
+                    if not q.get("valid_answer"):
+                        missing_labels.append(_summary_question_label(q, seq))
+            title = roman.get(part.get("type"), part.get("title", "PHẦN"))
+            if int(part.get("type", 1)) == 4:
+                status = '<div class="analysis-card-ok">Tự luận: không bắt buộc đánh dấu đáp án.</div>'
+            elif missing_labels:
+                status = f'<div class="analysis-card-bad">Thiếu đáp án: Câu {esc(", ".join(missing_labels))}</div>'
+            else:
+                status = '<div class="analysis-card-ok">✓ Đủ đáp án cho tất cả câu.</div>'
+            detail_cards.append(
+                f'<div class="analysis-card"><div class="analysis-card-title">{esc(title)}</div>'
+                f'<div class="analysis-card-meta">{total} câu · Có đáp án/hợp lệ: <b>{valid}/{total}</b> · Thiếu: <b>{len(missing_labels)}</b></div>'
+                f'{status}</div>'
             )
-
-    st.markdown(
-        '<div class="part-status-grid">' + "".join(cards) + '</div>',
-        unsafe_allow_html=True,
-    )
-else:
-    summary = None
-    parts = []
-
-# ============================================================
-# 3 — WORKSPACE: PREVIEW + REVIEW/CONFIG
-# ============================================================
-std_config = None
-ym_config = None
-
-if not engine:
-    with st.container(border=True):
-        st.caption("Phân tích đề để mở khu vực xem trước và cấu hình.")
-else:
-    if not engine.youngmix:
-        preview_rows = standard_preview_data(engine)
-        issues = audit_standard(engine, preview_rows)
-
-        # ----------------------------------------------------
-        # CẤU HÌNH TRỘN TỰ ĐỘNG — luôn mở, nằm trên preview
-        # ----------------------------------------------------
-        st.markdown(
-            '<div class="auto-config-wrap">'
-            '<div class="auto-config-head">'
-            '<div><div class="auto-config-title">⚙️ Cấu hình trộn tự động</div>'
-            '<div class="auto-config-sub">Tất cả tùy chọn hiển thị trực tiếp theo hàng ngang, không thu gọn.</div></div>'
-            '</div></div>',
-            unsafe_allow_html=True,
-        )
-
-        top_cfg_1, top_cfg_2 = st.columns([1.3, 4.7], gap="small")
-        with top_cfg_1:
-            keep_titles = st.checkbox(
-                "Giữ tiêu đề nhóm/mục",
-                value=False,
-                key="std_keep_titles_v4",
-            )
-        with top_cfg_2:
-            st.caption("Mỗi hàng: Phần/nhóm → Trộn câu → Số câu lấy → Giữ vị trí câu → Trộn vị trí nhóm")
-
-        std_groups = {}
-
-        # Header hàng cấu hình
-        h0, h1, h2, h3, h4 = st.columns([2.35, 1.0, 1.0, 1.35, 1.0], gap="small")
-        h0.markdown("**Phần / nhóm**")
-        h1.markdown("**Trộn câu**")
-        h2.markdown("**Số câu lấy**")
-        h3.markdown("**Giữ vị trí câu**")
-        h4.markdown("**Trộn nhóm**")
-
-        for part in summary["parts"]:
-            multi = len(part["groups"]) > 1
-            for g_idx, g in enumerate(part["groups"]):
-                key = f"s4_{g['p_idx']}_{g['m_idx']}"
-                with st.container(border=True):
-                    c0, c1, c2, c3, c4 = st.columns([2.35, 1.0, 1.0, 1.35, 1.0], gap="small")
-
-                    with c0:
-                        short_title = part["title"]
-                        if multi and g.get("title"):
-                            short_title = f'{part["title"]} · {g["title"]}'
-                        st.markdown(
-                            f'<div class="config-part-label">{esc(short_title)}</div>'
-                            f'<div class="config-part-meta">{g["question_count"]} câu'
-                            + (" · nhiều nhóm" if multi else "") + '</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                    with c1:
-                        shuffle_q = st.toggle(
-                            "Trộn",
-                            value=(part["type"] != 4),
-                            key=key + "_sq",
-                            label_visibility="collapsed",
-                        )
-                        st.caption("Có" if shuffle_q else "Không")
-
-                    with c2:
-                        pick = st.number_input(
-                            "Số câu lấy",
-                            0,
-                            g["question_count"],
-                            g["question_count"],
-                            key=key + "_pick",
-                            label_visibility="collapsed",
-                        )
-
-                    with c3:
-                        fixed = st.text_input(
-                            "Giữ vị trí câu",
-                            value=", ".join(str(q["index"]) for q in g["questions"] if q["fixed"]),
-                            placeholder="VD: 1, 5",
-                            key=key + "_fix",
-                            label_visibility="collapsed",
-                        )
-
-                    with c4:
-                        shuffle_group = st.toggle(
-                            "Trộn nhóm",
-                            value=(multi and not g["is_fixed"] and part["type"] != 4),
-                            disabled=not multi,
-                            key=key + "_sg",
-                            label_visibility="collapsed",
-                        )
-                        st.caption("Có" if shuffle_group else ("Không" if multi else "1 nhóm"))
-
-                    std_groups[f"{g['p_idx']}:{g['m_idx']}"] = {
-                        "shuffle_questions": shuffle_q,
-                        "pick": int(pick),
-                        "fixed_questions": fixed,
-                        "shuffle_group_order": shuffle_group,
-                    }
-
-        std_config = {"keep_group_titles": keep_titles, "groups": std_groups}
-
-        # ----------------------------------------------------
-        # XEM TRƯỚC 70% + RÀ SOÁT 30%
-        # ----------------------------------------------------
-        st.markdown(
-            '<div class="workspace-title">Xem trước đề online • Rà soát đề</div>',
-            unsafe_allow_html=True,
-        )
-        left, right = st.columns([2.35, 1], gap="large")
-
-        with left:
-            with st.container(border=True):
-                st.markdown(
-                    '<div class="preview-heading"><b>👁️ Xem trước đề online</b>'
-                    '<span class="preview-badge">70% không gian làm việc</span></div>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    '<div class="word-preview-note"><b>Rà soát trực quan:</b> '
-                    'DTMIX chỉ tô <b style="color:#D71920">đỏ đáp án đúng đã nhận diện</b>. '
-                    'DOCX vẫn được dựng trực tiếp để giữ công thức Office Math/OMML, ảnh, bảng và định dạng Word.</div>',
-                    unsafe_allow_html=True,
-                )
-                preview_mode = st.radio(
-                    "Kiểu xem",
-                    ["Xem trực tiếp DOCX", "Bản in PDF (nếu máy chủ có LibreOffice)"],
-                    horizontal=True,
-                    key="std_preview_mode_v6_3",
-                    label_visibility="collapsed",
-                )
-                if preview_mode.startswith("Xem trực tiếp"):
-                    browser_docx_preview(engine, "std_browser_v63", height=900)
-                else:
-                    exact_word_preview(engine, "std_exact_v63")
-
-        with right:
-            with st.container(border=True):
-                st.markdown(
-                    '<div class="control-title">🩺 Rà soát đề theo từng phần</div>',
-                    unsafe_allow_html=True,
-                )
-
-                # Tạo danh sách câu thiếu đáp án theo từng phần.
-                missing_map = {}
-                warning_map = {}
-                for row in preview_rows:
-                    part_name = row["part"]
-                    missing_map.setdefault(part_name, [])
-                    warning_map.setdefault(part_name, [])
-                    if not row["valid"]:
-                        missing_map[part_name].append(row["number"])
-                    if row.get("duplicates"):
-                        warning_map[part_name].append(
-                            f'Câu {row["number"]}: trùng phương án {", ".join(row["duplicates"])}'
-                        )
-
-                for part in summary["parts"]:
-                    pname = part["title"]
-                    total = part["question_count"]
-                    valid = part["valid_count"]
-                    missing_nums = missing_map.get(pname, [])
-                    missing_count = len(missing_nums)
-
-                    st.markdown(
-                        f'<div class="review-part">'
-                        f'<div class="review-part-title">{esc(pname)}</div>'
-                        f'<div class="review-part-line">Tổng: <b>{total} câu</b> · '
-                        f'Đã có đáp án: <span class="review-ok">{valid}/{total}</span> · '
-                        f'Còn thiếu: <span class="{"review-ok" if missing_count == 0 else "review-bad"}">{missing_count}</span></div>'
-                        + (
-                            '<div class="review-allok">✓ Tất cả các câu đã có đáp án hợp lệ.</div>'
-                            if missing_count == 0
-                            else
-                            f'<div class="review-missing">Chưa có đáp án: Câu '
-                            f'{esc(", ".join(str(x) for x in missing_nums))}</div>'
-                        )
-                        + '</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                    for warning in warning_map.get(pname, []):
-                        st.warning(warning)
-
-                # Các cảnh báo khác ngoài thiếu đáp án/trùng phương án
-                other_issues = [
-                    x for x in issues
-                    if x["level"] == "warning"
-                    and "Phương án trùng" not in x["text"]
-                ]
-                if other_issues:
-                    st.divider()
-                    st.markdown("**Cảnh báo bổ sung**")
-                    for item in other_issues:
-                        st.caption(f'⚠️ {item["part"]} · Câu {item["question"]}: {item["text"]}')
-
     else:
-        groups = summary.get("youngmix_groups", [])
-        left, right = st.columns([2.35, 1], gap="large")
+        ym_groups = summary.get("youngmix_groups", [])
+        flat = [g for p in parts for g in p.get("groups", [])]
+        for i, yg in enumerate(ym_groups):
+            sg = flat[i] if i < len(flat) else {"questions": [], "question_count": yg.get("question_count",0)}
+            qs = sg.get("questions", [])
+            total = int(yg.get("question_count", len(qs)))
+            valid = sum(1 for q in qs if q.get("valid_answer"))
+            missing = [_summary_question_label(q, j+1) for j,q in enumerate(qs) if not q.get("valid_answer")]
+            fixed_text = "Cố định" if (yg.get("is_fixed") or True) else "Có thể đổi vị trí"
+            if missing:
+                status = f'<div class="analysis-card-bad">Thiếu đáp án: Câu {esc(", ".join(missing))}</div>'
+            else:
+                status = '<div class="analysis-card-ok">✓ Đủ đáp án cho các câu cần đáp án.</div>'
+            detail_cards.append(
+                f'<div class="analysis-card"><div class="analysis-card-title">{esc(yg.get("name",f"NHÓM {i+1}"))} {esc(yg.get("tag","<g>"))}</div>'
+                f'<div class="analysis-card-meta">{total} câu · Có đáp án/hợp lệ: <b>{valid}/{total}</b> · Thiếu: <b>{len(missing)}</b><br>'
+                f'{esc(yg.get("q_type",""))} · {esc(yg.get("mix_type",""))} · {fixed_text}</div>{status}</div>'
+            )
+    st.markdown('<div class="analysis-detail-grid">'+''.join(detail_cards)+'</div>', unsafe_allow_html=True)
 
-        with left:
+    # -------- CẤU HÌNH TRỘN: cũng đặt trên preview --------
+    if not engine.youngmix:
+        st.markdown('<div class="auto-config-title">⚙️ Cấu hình trộn tự động</div>', unsafe_allow_html=True)
+        keep_titles = st.checkbox("Giữ tiêu đề nhóm/mục", value=False, key="std_keep_titles_v64")
+        std_groups = {}
+        h0,h1,h2,h3,h4 = st.columns([2.4,1.0,1.0,1.35,1.0], gap="small")
+        h0.markdown("**Phần / nhóm**"); h1.markdown("**Trộn câu**"); h2.markdown("**Số câu lấy**"); h3.markdown("**Giữ vị trí câu**"); h4.markdown("**Trộn nhóm**")
+        for part in parts:
+            multi = len(part.get("groups", [])) > 1
+            for g in part.get("groups", []):
+                key=f"s64_{g['p_idx']}_{g['m_idx']}"
+                with st.container(border=True):
+                    c0,c1,c2,c3,c4=st.columns([2.4,1.0,1.0,1.35,1.0], gap="small")
+                    with c0:
+                        title=part["title"] + (f' · {g["title"]}' if multi and g.get("title") else '')
+                        st.markdown(f'<div class="config-part-label">{esc(title)}</div><div class="config-part-meta">{g["question_count"]} câu</div>',unsafe_allow_html=True)
+                    with c1:
+                        shuffle_q=st.toggle("Trộn câu",value=(part["type"]!=4),key=key+"_sq",label_visibility="collapsed")
+                    with c2:
+                        pick=st.number_input("Số câu lấy",0,g["question_count"],g["question_count"],key=key+"_pick",label_visibility="collapsed")
+                    with c3:
+                        fixed=st.text_input("Giữ vị trí câu",value=", ".join(str(q["index"]) for q in g["questions"] if q["fixed"]),placeholder="VD: 1, 5",key=key+"_fix",label_visibility="collapsed")
+                    with c4:
+                        shuffle_group=st.toggle("Trộn nhóm",value=(multi and not g["is_fixed"] and part["type"]!=4),disabled=not multi,key=key+"_sg",label_visibility="collapsed")
+                    std_groups[f"{g['p_idx']}:{g['m_idx']}"]={"shuffle_questions":shuffle_q,"pick":int(pick),"fixed_questions":fixed,"shuffle_group_order":shuffle_group}
+        std_config={"keep_group_titles":keep_titles,"groups":std_groups}
+    else:
+        groups=summary.get("youngmix_groups",[])
+        st.markdown('<div class="ym-config-head">🩺 Rà soát & cấu hình YoungMix</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ym-config-note">Cấu trúc, số câu, tình trạng đáp án và toàn bộ tùy chọn YoungMix được đặt ở đây trước phần xem trước.</div>', unsafe_allow_html=True)
+        y0,y1,y2=st.columns([1.55,1.65,2.8],gap="small")
+        with y0:
+            continuous=st.toggle("Đánh số câu liên tục giữa các nhóm",value=False,key="ym_cont_v64")
+        with y1:
+            master_fix=st.toggle("Cố định vị trí tất cả các nhóm",value=True,key="ym_master_v64",help="Mặc định bật theo yêu cầu: các nhóm giữ nguyên vị trí.")
+        with y2:
+            st.caption("Mặc định: cố định vị trí nhóm. Chỉ nội dung bên trong nhóm được trộn theo g1/g2/g3.")
+
+        ym_groups_cfg=[]
+        hh0,hh1,hh2,hh3,hh4,hh5=st.columns([1.8,1.45,2.0,.9,1.05,1.1],gap="small")
+        hh0.markdown("**Nhóm**"); hh1.markdown("**Loại câu**"); hh2.markdown("**Cách trộn**"); hh3.markdown("**Số câu lấy**"); hh4.markdown("**Cố định nhóm**"); hh5.markdown("**Đánh lại Câu 1**")
+        for i,g in enumerate(groups):
             with st.container(border=True):
-                st.markdown('<div class="preview-heading"><b>👁️ Xem trước đề online</b><span class="preview-badge">70% không gian làm việc</span></div>', unsafe_allow_html=True)
-                st.markdown(
-                    '<div class="word-preview-note"><b>Trình xem mới:</b> DOCX được dựng trực tiếp trong trình duyệt. '
-                    'Công thức Office Math/OMML, ảnh, bảng và định dạng Word được ưu tiên hiển thị; g1/g2/g3 vẫn cấu hình ở cột bên phải.</div>',
-                    unsafe_allow_html=True,
-                )
-                preview_mode = st.radio(
-                    "Kiểu xem",
-                    ["Xem trực tiếp DOCX", "Bản in PDF (nếu máy chủ có LibreOffice)"],
-                    horizontal=True,
-                    key="ym_preview_mode_v5",
-                    label_visibility="collapsed",
-                )
-                if preview_mode.startswith("Xem trực tiếp"):
-                    browser_docx_preview(engine, "ym_browser", height=930)
-                else:
-                    exact_word_preview(engine, "ym_exact")
+                c0,c1,c2,c3,c4,c5=st.columns([1.8,1.45,2.0,.9,1.05,1.1],gap="small")
+                with c0:
+                    st.markdown(f'<div class="config-part-label">{esc(g["name"])} {esc(g["tag"])}</div><div class="config-part-meta">{g["question_count"]} câu</div>',unsafe_allow_html=True)
+                type_opts=["TN 2025 - Phần 1","TN 2025 - Phần 2","TN 2025 - Phần 3","Trắc nghiệm","Tự luận"]
+                default_type=g["q_type"] if g["q_type"] in type_opts else "Trắc nghiệm"
+                with c1:
+                    q_type=st.selectbox("Loại câu",type_opts,index=type_opts.index(default_type),key=f"ym_type_v64_{i}",label_visibility="collapsed")
+                modes=["g0 · Không hoán vị","g1 · Chỉ trộn câu hỏi","g2 · Chỉ trộn đáp án","g3 · Trộn câu hỏi + đáp án"]
+                dm=youngmix_mode_label(g["mix_type"]); dm=dm if dm in modes else modes[-1]
+                with c2:
+                    mix_label=st.selectbox("Cách trộn",modes,index=modes.index(dm),key=f"ym_mode_v64_{i}",label_visibility="collapsed")
+                with c3:
+                    pick=st.number_input("Số câu lấy",0,g["question_count"],g["question_count"],key=f"ym_pick_v64_{i}",label_visibility="collapsed")
+                with c4:
+                    fix=st.checkbox("Cố định nhóm",value=(master_fix or g["is_fixed"]),disabled=master_fix,key=f"ym_fix_v64_{i}",label_visibility="collapsed")
+                    st.caption("Có" if fix else "Không")
+                with c5:
+                    start_q1=st.checkbox("Đánh lại Câu 1",value=((i==0) if continuous else True),disabled=continuous,key=f"ym_start_v64_{i}",label_visibility="collapsed")
+                    st.caption("Có" if start_q1 else "Không")
+                ym_groups_cfg.append({"q_type":q_type,"mix_type":mix_type_from_label(mix_label),"pick":int(pick),"fix":fix,"start_q1":start_q1})
+        ym_config={"continuous_numbering":continuous,"master_fix":master_fix,"groups":ym_groups_cfg}
 
-        with right:
-            with st.container(border=True):
-                st.markdown('<div class="control-title">🩺 Rà soát & cấu hình YoungMix</div>', unsafe_allow_html=True)
-                if summary["missing_answers"] == 0:
-                    st.success("Các câu cần đáp án đã được nhận diện.")
-                else:
-                    st.warning(f"Có {summary['missing_answers']} câu cần kiểm tra hoặc thuộc dạng tự luận.")
-
-                st.markdown('<div class="control-note">Các tùy chọn bên dưới được viết đầy đủ để dễ hiểu khi sử dụng trên màn hình nhỏ.</div>', unsafe_allow_html=True)
-                continuous = st.toggle(
-                    "Đánh số câu liên tục giữa các nhóm",
-                    value=False,
-                    key="ym_cont_v3",
-                    help="Bật để số câu chạy liên tục từ nhóm trước sang nhóm sau."
-                )
-                master_fix = st.toggle(
-                    "Cố định vị trí tất cả các nhóm",
-                    value=True,
-                    key="ym_master_v3",
-                    help="Mặc định bật: các nhóm giữ nguyên vị trí; chỉ nội dung bên trong nhóm được trộn theo cấu hình. Có thể tắt nếu muốn cho phép đổi vị trí nhóm."
-                )
-                show_source_answers = st.toggle(
-                    "Hiển thị đáp án đã nhận diện trong phần rà soát",
-                    value=True,
-                    key="ym_show_answers_v5",
-                )
-                st.divider()
-                st.markdown('<div class="control-title">🧩 Cấu hình g1 / g2 / g3</div>', unsafe_allow_html=True)
-                ym_groups_cfg = []
-                with st.container(height=540, border=False):
-                    for i, g in enumerate(groups):
-                        with st.expander(f"{g['name']} {g['tag']} · {g['question_count']} câu", expanded=(i == 0)):
-                            tag_class = re.sub(r"[<>#]", "", g.get("tag", "g3")).lower()
-                            st.markdown(
-                                f'<span class="g-badge {tag_class if tag_class in ("g0","g1","g2","g3","g4") else "g3"}">{esc(g["tag"])}</span> '
-                                f'<span style="font-size:13px;color:#66758A">{esc(g["q_type"])}</span>',
-                                unsafe_allow_html=True,
-                            )
-                            mode_options = [
-                                "g0 · Không hoán vị",
-                                "g1 · Chỉ trộn câu hỏi",
-                                "g2 · Chỉ trộn đáp án",
-                                "g3 · Trộn câu hỏi + đáp án",
-                            ]
-                            default_mode = youngmix_mode_label(g["mix_type"])
-                            if default_mode not in mode_options: default_mode = mode_options[-1]
-                            mix_label = st.selectbox("Cách trộn", mode_options, index=mode_options.index(default_mode), key=f"ym_mode_v3_{i}")
-                            type_opts = ["TN 2025 - Phần 1", "TN 2025 - Phần 2", "TN 2025 - Phần 3", "Trắc nghiệm", "Tự luận"]
-                            default_type = g["q_type"] if g["q_type"] in type_opts else "Trắc nghiệm"
-                            q_type = st.selectbox("Loại câu", type_opts, index=type_opts.index(default_type), key=f"ym_type_v3_{i}")
-                            c3, c4 = st.columns(2)
-                            pick = c3.number_input("Số câu lấy", 0, g["question_count"], g["question_count"], key=f"ym_pick_v3_{i}")
-                            fix = c4.checkbox("Cố định nhóm", value=(master_fix or g["is_fixed"]), disabled=master_fix, key=f"ym_fix_v3_{i}")
-                            start_q1 = st.checkbox("Đánh lại từ Câu 1", value=((i == 0) if continuous else True), disabled=continuous, key=f"ym_start_v3_{i}")
-                            ym_groups_cfg.append({
-                                "q_type": q_type,
-                                "mix_type": mix_type_from_label(mix_label),
-                                "pick": int(pick),
-                                "fix": fix,
-                                "start_q1": start_q1,
-                            })
-                ym_config = {"continuous_numbering": continuous, "master_fix": master_fix, "groups": ym_groups_cfg}
+    # -------- XEM TRƯỚC: phía dưới toàn bộ phân tích/cấu hình --------
+    st.markdown('<div class="workspace-title">Xem trước đề online</div>', unsafe_allow_html=True)
+    pv,side=st.columns([2.35,1],gap="large")
+    with pv:
+        with st.container(border=True):
+            st.markdown('<div class="preview-heading"><b>👁️ Đề gốc đã nhận diện</b><span class="preview-badge">~70% không gian</span></div>', unsafe_allow_html=True)
+            st.markdown('<div class="word-preview-note"><b>Quy ước màu:</b> DTMIX đưa toàn bộ chữ đỏ gốc về màu thường trong bản preview và <b style="color:#D71920">chỉ tô đỏ phương án mà bộ phân tích xác định là đáp án đúng</b>. File Word gốc không bị sửa.</div>',unsafe_allow_html=True)
+            if st.session_state.get("preview_mode_v64","Xem trực tiếp DOCX").startswith("Xem trực tiếp"):
+                browser_docx_preview(engine,"preview_browser_v64",height=900)
+            else:
+                exact_word_preview(engine,"preview_exact_v64")
+    with side:
+        with st.container(border=True):
+            st.markdown('<div class="preview-side-title">Hiển thị xem trước</div>',unsafe_allow_html=True)
+            preview_mode=st.radio("Kiểu xem",["Xem trực tiếp DOCX","Bản in PDF (nếu máy chủ có LibreOffice)"],key="preview_mode_v64")
+            st.markdown('<div class="preview-side-box"><b>Đỏ:</b> đáp án đúng DTMIX đã nhận diện.<br><b>Đen:</b> nội dung/đáp án còn lại.<br><br>Nếu đáp án có công thức hoặc hình ảnh, ít nhất ký hiệu phương án A/B/C/D của đáp án đúng sẽ được tô đỏ.</div>',unsafe_allow_html=True)
+else:
+    summary=None; parts=[]
+    with st.container(border=True):
+        st.caption("Tải và phân tích đề để hiển thị cấu trúc, cấu hình và xem trước.")
 
 # ============================================================
 # MIX REQUEST FROM TOP TOOLBAR
@@ -1906,6 +1822,6 @@ with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=Fal
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview chỉ tô đỏ đáp án đúng</div>',
+    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
     unsafe_allow_html=True,
 )

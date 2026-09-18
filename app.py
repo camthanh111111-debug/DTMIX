@@ -284,6 +284,22 @@ hr{{margin:.45rem 0!important}}
   text-align:center!important;
 }}
 
+
+/* Căn giữa nhãn và giá trị của các ô thông tin đầu đề */
+[data-testid="stTextInput"] [data-testid="stWidgetLabel"]{{
+  width:100%!important;
+  display:flex!important;
+  justify-content:center!important;
+  text-align:center!important;
+}}
+[data-testid="stTextInput"] [data-testid="stWidgetLabel"] p{{
+  width:100%!important;
+  text-align:center!important;
+}}
+[data-testid="stTextInput"] input{{
+  text-align:center!important;
+}}
+
 </style>
 
 <div class="hero">

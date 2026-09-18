@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 
 import streamlit as st
@@ -126,6 +129,37 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
 .stTextInput input,.stNumberInput input{{border-radius:8px;background:#fff!important;color:#23364A!important}}
 .stSelectbox div[data-baseweb="select"]>div{{border-radius:8px;background:#fff!important;color:#23364A!important}}
 .stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
+
+/* Chữ rõ hơn, không cắt label */
+[data-testid="stWidgetLabel"] p{font-weight:700!important;color:#30455E!important;font-size:13.5px!important}
+[data-testid="stMarkdownContainer"] p{line-height:1.48}
+[data-testid="stToggle"] label{width:100%!important}
+[data-testid="stToggle"] label p{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}
+[data-baseweb="select"] *{font-size:13.5px!important}
+.stCaptionContainer{color:#73859A!important}
+div[data-testid="stHorizontalBlock"]{align-items:flex-start}
+
+/* Thanh công cụ trên cùng */
+.tool-card-title{font-size:13.5px;font-weight:850;color:#173B65;margin-bottom:6px}
+.top-hint{font-size:11px;color:#6D8096;line-height:1.35;margin-top:5px}
+.top-status{font-size:11.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}
+
+/* Thông tin đề dạng ngang */
+.exam-info{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}
+.exam-info>div{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:12.2px;color:#30455E}
+.exam-info>div:nth-child(3n){border-right:0}
+.exam-info>div:nth-last-child(-n+3){border-bottom:0}
+.exam-info b{color:#173B65;margin-right:5px}
+
+/* Workspace */
+.preview-shell{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}
+.preview-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}
+.preview-heading b{font-size:16px;color:#143A66}
+.preview-badge{font-size:11px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}
+
+/* Right panel clarity */
+.control-title{font-size:16px;font-weight:850;color:#173B65;margin:2px 0 8px}
+.control-note{font-size:11.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}
 .stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
 hr{{border-color:#E7EDF4}}
 
@@ -201,6 +235,200 @@ def clear_engine() -> None:
     st.session_state.pop("dtmix_signature", None)
     st.session_state.pop("mix_result", None)
 
+
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _prepare_browser_preview_docx(file_bytes: bytes, signature: str) -> tuple[bytes, dict]:
+    """
+    Chuẩn bị DOCX cho trình xem trong trình duyệt.
+    - Giữ nguyên DOCX gốc cho engine trộn đề.
+    - Chỉ tạo một bản tạm phục vụ preview.
+    - Nếu máy chủ có công cụ chuyển WMF/EMF -> PNG, thay ảnh vector legacy
+      bằng PNG nhưng giữ đường dẫn quan hệ, giúp trình duyệt hiển thị MathType/OLE cũ tốt hơn.
+    """
+    stats = {"converted_wmf_emf": 0, "wmf_emf_total": 0}
+    try:
+        zin = zipfile.ZipFile(io.BytesIO(file_bytes), "r")
+        names = zin.namelist()
+        legacy = [n for n in names if n.lower().startswith("word/media/") and n.lower().endswith((".wmf", ".emf"))]
+        stats["wmf_emf_total"] = len(legacy)
+        if not legacy:
+            zin.close()
+            return file_bytes, stats
+
+        converter = shutil.which("magick") or shutil.which("convert")
+        if not converter:
+            zin.close()
+            return file_bytes, stats
+
+        replacement = {}
+        temp_root = Path(tempfile.mkdtemp(prefix="dtmix_vec_"))
+        try:
+            for name in legacy:
+                raw = zin.read(name)
+                ext = Path(name).suffix.lower()
+                srcf = temp_root / ("source" + ext)
+                dstf = temp_root / "result.png"
+                srcf.write_bytes(raw)
+                if dstf.exists():
+                    dstf.unlink()
+                cmd = [converter, str(srcf), str(dstf)]
+                try:
+                    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+                    if dstf.exists() and dstf.stat().st_size > 32:
+                        replacement[name] = dstf.read_bytes()
+                        stats["converted_wmf_emf"] += 1
+                except Exception:
+                    pass
+
+            if not replacement:
+                zin.close()
+                return file_bytes, stats
+
+            out_io = io.BytesIO()
+            with zipfile.ZipFile(out_io, "w", zipfile.ZIP_DEFLATED) as zout:
+                for info in zin.infolist():
+                    data = replacement.get(info.filename, zin.read(info.filename))
+                    if info.filename == "[Content_Types].xml":
+                        txt = data.decode("utf-8", errors="ignore")
+                        if any(k.lower().endswith(".wmf") for k in replacement):
+                            txt = re.sub(
+                                r'(<Default[^>]*Extension=["\']wmf["\'][^>]*ContentType=["\'])[^"\']+(["\'][^>]*/>)',
+                                r'\1image/png\2', txt, flags=re.I
+                            )
+                        if any(k.lower().endswith(".emf") for k in replacement):
+                            txt = re.sub(
+                                r'(<Default[^>]*Extension=["\']emf["\'][^>]*ContentType=["\'])[^"\']+(["\'][^>]*/>)',
+                                r'\1image/png\2', txt, flags=re.I
+                            )
+                        data = txt.encode("utf-8")
+                    zout.writestr(info, data)
+            zin.close()
+            return out_io.getvalue(), stats
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+    except Exception:
+        return file_bytes, stats
+
+
+def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 920) -> None:
+    """
+    Trình xem DOCX chạy trực tiếp trong trình duyệt bằng docx-preview 0.4.0.
+    Ưu điểm:
+      • Không phụ thuộc LibreOffice trên máy chủ.
+      • Hỗ trợ ảnh, bảng, header/footer và Office Math (OMML).
+      • Dùng toàn bộ chiều rộng vùng preview ~70%.
+    Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
+    """
+    sig = hashlib.sha256(engine.file_bytes).hexdigest()
+    preview_bytes, stats = _prepare_browser_preview_docx(engine.file_bytes, sig)
+    b64 = base64.b64encode(preview_bytes).decode("ascii")
+    js_data = json.dumps(b64)
+
+    conversion_note = ""
+    if stats.get("wmf_emf_total", 0):
+        if stats.get("converted_wmf_emf", 0):
+            conversion_note = f" • đã chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} ảnh WMF/EMF sang PNG"
+        else:
+            conversion_note = f" • phát hiện {stats['wmf_emf_total']} đối tượng WMF/EMF legacy"
+
+    html_doc = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx-preview@0.4.0/dist/docx-preview.min.js"></script>
+<style>
+  *{{box-sizing:border-box}}
+  html,body{{margin:0;background:#F3F7FC;color:#1F3147;font-family:Inter,Segoe UI,Arial,sans-serif}}
+  .topbar{{
+    position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;
+    gap:10px;background:rgba(255,255,255,.96);border-bottom:1px solid #DCE7F3;padding:9px 12px;
+    box-shadow:0 3px 12px rgba(38,75,114,.06)
+  }}
+  .status{{font-size:12px;font-weight:750;color:#176BCE}}
+  .tools{{display:flex;gap:7px;align-items:center}}
+  button{{border:1px solid #CFE0F1;background:#fff;color:#244B76;border-radius:8px;padding:6px 9px;font-weight:750;cursor:pointer}}
+  button:hover{{background:#EEF6FF}}
+  #wrap{{padding:14px;overflow:auto;min-height:{height-46}px}}
+  #doc{{transform-origin:top center;transition:transform .12s ease}}
+  .docx-wrapper{{background:#EDF3FA!important;padding:16px!important}}
+  .docx-wrapper>section.docx{{
+    margin:0 auto 18px!important;box-shadow:0 6px 22px rgba(26,60,96,.13)!important;
+    border:1px solid #D9E3EE!important;background:white!important
+  }}
+  math{{font-family:"Cambria Math","STIX Two Math","Times New Roman",serif!important}}
+  img{{max-width:100%!important}}
+  .err{{margin:20px;padding:14px;border:1px solid #F0C9CE;background:#FFF2F3;color:#A43B48;border-radius:10px}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="status" id="status">Đang dựng đề Word trong trình duyệt…{conversion_note}</div>
+  <div class="tools">
+    <button onclick="zoomOut()">−</button>
+    <button id="zoomLabel" onclick="resetZoom()">100%</button>
+    <button onclick="zoomIn()">+</button>
+    <button onclick="fitWidth()">Vừa khung</button>
+  </div>
+</div>
+<div id="wrap"><div id="doc"></div></div>
+<script>
+let scale=1;
+const data64={js_data};
+function bytesFromBase64(b64){{
+  const bin=atob(b64); const arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}}
+function applyZoom(){{
+  document.getElementById('doc').style.zoom=scale;
+  document.getElementById('zoomLabel').textContent=Math.round(scale*100)+'%';
+}}
+function zoomIn(){{scale=Math.min(1.4,scale+.1);applyZoom()}}
+function zoomOut(){{scale=Math.max(.6,scale-.1);applyZoom()}}
+function resetZoom(){{scale=1;applyZoom()}}
+function fitWidth(){{
+  const wrap=document.getElementById('wrap');
+  const page=document.querySelector('section.docx');
+  if(!page) return;
+  const w=page.getBoundingClientRect().width/scale;
+  scale=Math.min(1,(wrap.clientWidth-38)/w);
+  applyZoom();
+}}
+(async()=>{{
+ try{{
+   if(!window.docx || !window.docx.renderAsync) throw new Error('Không tải được thư viện docx-preview.');
+   const data=bytesFromBase64(data64);
+   await window.docx.renderAsync(data, document.getElementById('doc'), null, {{
+      inWrapper:true,
+      ignoreWidth:false,
+      ignoreHeight:false,
+      ignoreFonts:false,
+      breakPages:true,
+      debug:false,
+      experimental:true,
+      renderHeaders:true,
+      renderFooters:true,
+      renderFootnotes:true,
+      renderEndnotes:true,
+      useBase64URL:true,
+      ignoreLastRenderedPageBreak:false
+   }});
+   document.getElementById('status').textContent='✓ Đã dựng DOCX: chữ, bảng, ảnh và Office Math/OMML{conversion_note}';
+   setTimeout(fitWidth,250);
+ }}catch(e){{
+   document.getElementById('status').textContent='Không dựng được DOCX trực tiếp.';
+   document.getElementById('doc').innerHTML='<div class="err"><b>Lỗi xem trước:</b> '+String(e)+'</div>';
+ }}
+}})();
+</script>
+</body>
+</html>
+"""
+    components.html(html_doc, height=height, scrolling=True)
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
@@ -287,7 +515,7 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
             st.warning(f"Không dựng được ảnh trang: {perr}")
 
     # Fallback khi môi trường chưa có LibreOffice/PyMuPDF
-    st.warning("Không dùng được bộ dựng Word chính xác. DTMIX chuyển sang chế độ HTML dự phòng.")
+    st.info("Chế độ PDF chưa sẵn sàng trên máy chủ. Hãy chọn “Xem trực tiếp DOCX” ở phía trên; chế độ đó không cần LibreOffice.")
     if err:
         st.caption(err)
     show_rich_preview(rich_standard_part_html(engine, None, True), height=780)
@@ -938,7 +1166,7 @@ def download_results() -> None:
 # ============================================================
 # 1 — HEADER + TOOLBAR
 # ============================================================
-sec(1, "Đầu đề & thanh trộn nhanh", "Thông tin đầu đề dàn ngang; ngay dưới là Đề gốc → Chế độ xử lý → Mã đề → Trộn & xuất file.")
+sec(1, "Chuẩn bị đề & trộn nhanh", "Mọi thao tác chính nằm trên một hàng: Đề gốc → Chế độ xử lý → Mã đề → Trộn & xuất file.")
 
 with st.container(border=True):
     title_row, theme_row = st.columns([4.6, 1], gap="small")
@@ -950,10 +1178,10 @@ with st.container(border=True):
         label_visibility="collapsed",
     )
 
-    h1, h2 = st.columns([1.25, 1.25], gap="small")
+    h1, h2 = st.columns([1.15, 1.35], gap="small")
     h1.text_input("Sở GD&ĐT / Phòng", key="hdr_so")
     h2.text_input("Tên trường", key="hdr_truong")
-    h3, h4, h5, h6 = st.columns([1.2, .9, 1.05, 1.15], gap="small")
+    h3, h4, h5, h6 = st.columns([1.18, .82, 1.0, 1.18], gap="small")
     h3.text_input("Tên kỳ thi", key="hdr_kythi")
     h4.text_input("Năm học", key="hdr_namhoc")
     h5.text_input("Môn thi", key="hdr_monthi")
@@ -962,12 +1190,12 @@ with st.container(border=True):
     st.divider()
 
     # Bố cục người dùng yêu cầu: Đề gốc | Chế độ | Mã đề | Trộn & xuất
-    file_col, mode_col, code_col, action_col = st.columns([2.2, 1.25, 1.45, 1.0], gap="medium")
+    file_col, mode_col, code_col, action_col = st.columns([2.15, 1.35, 1.55, 1.25], gap="medium")
 
     current_sig = None
     raw = None
     with file_col:
-        st.markdown("**📄 Đề gốc (.docx)**")
+        st.markdown('<div class="tool-card-title">1. 📄 Đề gốc (.docx)</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
             "Đề gốc",
             type=["docx"],
@@ -981,7 +1209,7 @@ with st.container(border=True):
             st.caption(f"{len(raw)/1024:.1f} KB")
 
     with mode_col:
-        st.markdown("**⚙️ Chế độ xử lý**")
+        st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
         mode = st.radio(
             "Chế độ",
             ["Tự động PHẦN I–IV", "YoungMix g1/g2/g3/g4"],
@@ -992,7 +1220,7 @@ with st.container(border=True):
         st.caption("g1: câu • g2: đáp án • g3: cả hai")
 
     with code_col:
-        st.markdown("**🏷️ Mã đề**")
+        st.markdown('<div class="tool-card-title">3. 🏷️ Mã đề / số lượng</div>', unsafe_allow_html=True)
         top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
 
     # Xác định engine hiện tại có đúng file/chế độ không
@@ -1006,7 +1234,7 @@ with st.container(border=True):
     )
 
     with action_col:
-        st.markdown("**🚀 Thao tác**")
+        st.markdown('<div class="tool-card-title">4. 🚀 Trộn & xuất</div>', unsafe_allow_html=True)
         analyze_clicked = st.button(
             "🔎 PHÂN TÍCH ĐỀ",
             type="primary",
@@ -1117,7 +1345,7 @@ else:
 # ============================================================
 # 3 — WORKSPACE: PREVIEW + REVIEW/CONFIG
 # ============================================================
-sec(3, "Xem trước đề online • Rà soát • Cấu hình", "Bản xem trước chiếm khoảng 70% chiều rộng; hình ảnh, bảng, chỉ số trên/dưới và công thức Word được dựng trực tiếp trên web.")
+sec(3, "Xem trước đề online • Rà soát • Cấu hình", "Khu vực xem đề chiếm khoảng 70% chiều rộng. DTMIX ưu tiên dựng DOCX trực tiếp trong trình duyệt để hiển thị chữ, ảnh, bảng và công thức Office Math.")
 
 std_config = None
 ym_config = None
@@ -1133,17 +1361,27 @@ else:
 
         with left:
             with st.container(border=True):
-                st.markdown("#### 👁️ Xem trước Word chính xác")
+                st.markdown('<div class="preview-heading"><b>👁️ Xem trước đề online</b><span class="preview-badge">70% không gian làm việc</span></div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="word-preview-note"><b>Giải pháp preview mới:</b> DTMIX chuyển DOCX sang PDF bằng LibreOffice rồi dựng từng trang bằng PyMuPDF. '
-                    'Cách này giữ tốt hơn công thức Toán/Hóa, Equation, WMF/OLE, ảnh, bảng và bố cục so với việc tự ghép HTML.</div>',
+                    '<div class="word-preview-note"><b>Trình xem mới:</b> DOCX được dựng trực tiếp trong trình duyệt bằng docx-preview 0.4.0. '
+                    'Office Math/OMML, ảnh, bảng, header/footer được ưu tiên hiển thị mà không phụ thuộc LibreOffice.</div>',
                     unsafe_allow_html=True,
                 )
-                exact_word_preview(engine, "std_exact")
+                preview_mode = st.radio(
+                    "Kiểu xem",
+                    ["Xem trực tiếp DOCX", "Bản in PDF (nếu máy chủ có LibreOffice)"],
+                    horizontal=True,
+                    key="std_preview_mode_v5",
+                    label_visibility="collapsed",
+                )
+                if preview_mode.startswith("Xem trực tiếp"):
+                    browser_docx_preview(engine, "std_browser", height=930)
+                else:
+                    exact_word_preview(engine, "std_exact")
 
         with right:
             with st.container(border=True):
-                st.markdown("#### 🩺 Rà soát nhanh")
+                st.markdown('<div class="control-title">🩺 Rà soát nhanh</div>', unsafe_allow_html=True)
                 if not issues:
                     st.success("Không phát hiện lỗi đáp án/phương án nổi bật.")
                 else:
@@ -1162,7 +1400,7 @@ else:
                             )
 
                 st.divider()
-                st.markdown("#### ⚙️ Cấu hình trộn")
+                st.markdown('<div class="control-title">⚙️ Cấu hình trộn tự động</div>', unsafe_allow_html=True)
                 keep_titles = st.checkbox("Giữ tiêu đề nhóm/mục", value=False, key="std_keep_titles_v3")
                 std_groups = {}
                 with st.container(height=500, border=False):
@@ -1203,27 +1441,52 @@ else:
 
         with left:
             with st.container(border=True):
-                st.markdown("#### 👁️ Xem trước Word chính xác")
+                st.markdown('<div class="preview-heading"><b>👁️ Xem trước đề online</b><span class="preview-badge">70% không gian làm việc</span></div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="word-preview-note"><b>Preview ưu tiên độ trung thực:</b> hiển thị theo trang Word sau khi chuyển PDF, '
-                    'nên công thức, hình ảnh, bảng và các đối tượng OLE/WMF dễ nhìn hơn. Cấu hình g1/g2/g3 vẫn nằm bên phải.</div>',
+                    '<div class="word-preview-note"><b>Trình xem mới:</b> DOCX được dựng trực tiếp trong trình duyệt. '
+                    'Công thức Office Math/OMML, ảnh, bảng và định dạng Word được ưu tiên hiển thị; g1/g2/g3 vẫn cấu hình ở cột bên phải.</div>',
                     unsafe_allow_html=True,
                 )
-                exact_word_preview(engine, "ym_exact")
+                preview_mode = st.radio(
+                    "Kiểu xem",
+                    ["Xem trực tiếp DOCX", "Bản in PDF (nếu máy chủ có LibreOffice)"],
+                    horizontal=True,
+                    key="ym_preview_mode_v5",
+                    label_visibility="collapsed",
+                )
+                if preview_mode.startswith("Xem trực tiếp"):
+                    browser_docx_preview(engine, "ym_browser", height=930)
+                else:
+                    exact_word_preview(engine, "ym_exact")
 
         with right:
             with st.container(border=True):
-                st.markdown("#### 🩺 Rà soát YoungMix")
+                st.markdown('<div class="control-title">🩺 Rà soát & cấu hình YoungMix</div>', unsafe_allow_html=True)
                 if summary["missing_answers"] == 0:
                     st.success("Các câu cần đáp án đã được nhận diện.")
                 else:
                     st.warning(f"Có {summary['missing_answers']} câu cần kiểm tra hoặc thuộc dạng tự luận.")
 
-                c1, c2 = st.columns(2)
-                continuous = c1.toggle("Đánh số liên tục", value=False, key="ym_cont_v3")
-                master_fix = c2.toggle("Cố định tất cả nhóm", value=False, key="ym_master_v3")
+                st.markdown('<div class="control-note">Các tùy chọn bên dưới được viết đầy đủ để dễ hiểu khi sử dụng trên màn hình nhỏ.</div>', unsafe_allow_html=True)
+                continuous = st.toggle(
+                    "Đánh số câu liên tục giữa các nhóm",
+                    value=False,
+                    key="ym_cont_v3",
+                    help="Bật để số câu chạy liên tục từ nhóm trước sang nhóm sau."
+                )
+                master_fix = st.toggle(
+                    "Cố định vị trí tất cả các nhóm",
+                    value=False,
+                    key="ym_master_v3",
+                    help="Bật để các nhóm giữ nguyên vị trí, chỉ nội dung bên trong nhóm được trộn theo cấu hình."
+                )
+                show_source_answers = st.toggle(
+                    "Hiển thị đáp án đã nhận diện trong phần rà soát",
+                    value=True,
+                    key="ym_show_answers_v5",
+                )
                 st.divider()
-                st.markdown("#### 🧩 g1 / g2 / g3")
+                st.markdown('<div class="control-title">🧩 Cấu hình g1 / g2 / g3</div>', unsafe_allow_html=True)
                 ym_groups_cfg = []
                 with st.container(height=540, border=False):
                     for i, g in enumerate(groups):

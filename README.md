@@ -1,37 +1,27 @@
-# DTMIX 1.3 - Streamlit
+# DTMIX Online 1.3 V5
 
-Bản online của DTMIX, dùng **Streamlit** cho giao diện và tái sử dụng thuật toán xử lý Word từ DTMIX 1.3.
+Giao diện Streamlit một trang, sáng và hiện đại.
 
-## Cấu trúc
+## Điểm mới V5
+- Thanh thao tác trên cùng: Đề gốc → Chế độ xử lý → Mã đề → Trộn & xuất.
+- Khu vực xem trước chiếm ~70%, cấu hình/rà soát ~30%.
+- Preview mặc định bằng `docx-preview 0.4.0` chạy trực tiếp trong trình duyệt:
+  - ảnh
+  - bảng
+  - header/footer
+  - Office Math / OMML
+  - định dạng DOCX
+- Không còn phụ thuộc LibreOffice để xem trước mặc định.
+- Chế độ PDF/LibreOffice là lựa chọn phụ.
+- Nếu máy chủ có ImageMagick + libwmf, DTMIX thử đổi WMF/EMF legacy sang PNG cho preview.
+- Nhãn YoungMix được viết đầy đủ, không còn bị cắt chữ.
 
-- `app.py`: giao diện Streamlit.
-- `engine.py`: cầu nối headless giữa Streamlit và thuật toán DTMIX.
-- `dtmix_legacy.py`: mã nguồn DTMIX 1.3 đã bỏ phụ thuộc giao diện khi chạy server.
-- `customtkinter.py`: shim headless để legacy core import được trên Linux.
-- `headless_compat.py`: thay thế dialog Tkinter.
-- `requirements.txt`: thư viện Python.
-- `.streamlit/config.toml`: cấu hình upload và theme.
-
-## Chạy trên máy
-
+## Chạy local
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Sau đó mở địa chỉ Streamlit hiển thị trong Terminal, thường là `http://localhost:8501`.
-
-## Đưa lên Streamlit Community Cloud
-
-1. Tạo/ dùng repository GitHub `DTMIX`.
-2. Đưa toàn bộ các file trong thư mục này lên **root** của repository.
-3. Trong Streamlit Community Cloud, tạo app mới từ GitHub repository.
-4. Chọn branch `main` và **Main file path = `app.py`**.
-5. Deploy.
-
-## Lưu ý quan trọng
-
-- Không thêm `customtkinter` vào `requirements.txt`; file `customtkinter.py` trong project là shim headless.
-- Không cần cài Tkinter trên Streamlit server.
-- File được người dùng tải lên và kết quả được lưu tạm trên server, sau đó tải về dưới dạng ZIP.
-- Nếu đổi thuật toán trong DTMIX desktop, cần đồng bộ thay đổi tương ứng vào `dtmix_legacy.py`.
+## Streamlit Community Cloud
+Đặt `app.py`, `requirements.txt` và `packages.txt` ở root repo.
+Main file: `app.py`.

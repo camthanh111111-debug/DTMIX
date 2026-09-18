@@ -1,0 +1,9 @@
+libreoffice
+libreoffice-math
+libreoffice-draw
+imagemagick
+libwmf-bin
+ghostscript
+fonts-liberation
+fonts-crosextra-carlito
+fonts-crosextra-caladea

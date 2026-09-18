@@ -105,15 +105,15 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
 }}
 .hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
 .hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
-.hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:25px}}
-.hero-title{{font-size:25px;font-weight:850;letter-spacing:-.3px;line-height:1}}
-.hero-sub{{font-size:13.5px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
+.hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:26.33px}}
+.hero-title{{font-size:26.33px;font-weight:850;letter-spacing:-.3px;line-height:1}}
+.hero-sub{{font-size:14.83px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
 .hero-side{{margin-left:auto;text-align:right;max-width:330px}}
-.hero-side b{{font-size:13px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:12px;margin-top:4px}}
+.hero-side b{{font-size:14.33px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:13.33px;margin-top:4px}}
 
 .sec{{display:flex;gap:10px;align-items:center;margin:14px 0 7px}}
 .sec-no{{width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--primary),var(--primary2));color:white;display:flex;align-items:center;justify-content:center;font-weight:850;box-shadow:0 5px 12px color-mix(in srgb,var(--primary) 24%, transparent)}}
-.sec-title{{font-size:19px;font-weight:820;color:#203044}} .sec-sub{{font-size:13px;color:var(--muted);margin-top:1px}}
+.sec-title{{font-size:20.33px;font-weight:820;color:#203044}} .sec-sub{{font-size:14.33px;color:var(--muted);margin-top:1px}}
 
 [data-testid="stVerticalBlockBorderWrapper"]{{
   border:1px solid var(--line)!important;border-radius:15px!important;background:rgba(255,255,255,.98);
@@ -131,22 +131,22 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
 .stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
 
 /* Chữ rõ hơn, không cắt label */
-[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:14.5px!important}}
+[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:15.83px!important}}
 [data-testid="stMarkdownContainer"] p{{line-height:1.48}}
 [data-testid="stToggle"] label{{width:100%!important}}
 [data-testid="stToggle"] label p{{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}}
-[data-baseweb="select"] *{{font-size:14.5px!important}}
+[data-baseweb="select"] *{{font-size:15.83px!important}}
 .stCaptionContainer{{color:#73859A!important}}
 div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
 
 /* Thanh công cụ trên cùng */
-.tool-card-title{{font-size:13.5px;font-weight:850;color:#173B65;margin-bottom:6px}}
-.top-hint{{font-size:12px;color:#6D8096;line-height:1.35;margin-top:5px}}
-.top-status{{font-size:12.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
+.tool-card-title{{font-size:14.83px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.top-hint{{font-size:13.33px;color:#6D8096;line-height:1.35;margin-top:5px}}
+.top-status{{font-size:13.83px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
 
 /* Thông tin đề dạng ngang */
 .exam-info{{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}}
-.exam-info>div{{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:12.2px;color:#30455E}}
+.exam-info>div{{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:13.53px;color:#30455E}}
 .exam-info>div:nth-child(3n){{border-right:0}}
 .exam-info>div:nth-last-child(-n+3){{border-bottom:0}}
 .exam-info b{{color:#173B65;margin-right:5px}}
@@ -154,28 +154,28 @@ div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
 /* Workspace */
 .preview-shell{{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}}
 .preview-heading{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}}
-.preview-heading b{{font-size:16px;color:#143A66}}
-.preview-badge{{font-size:12px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
+.preview-heading b{{font-size:17.33px;color:#143A66}}
+.preview-badge{{font-size:13.33px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
 
 /* Right panel clarity */
-.control-title{{font-size:16px;font-weight:850;color:#173B65;margin:2px 0 8px}}
-.control-note{{font-size:12.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
+.control-title{{font-size:17.33px;font-weight:850;color:#173B65;margin:2px 0 8px}}
+.control-note{{font-size:13.83px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
 .stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
 hr{{border-color:#E7EDF4}}
 
 .status-good{{background:var(--green-bg);border:1px solid #BFE5D6;color:#116B50;border-radius:11px;padding:9px 12px;font-weight:750}}
 .status-warn{{background:var(--amber-bg);border:1px solid #EED9AE;color:#955B00;border-radius:11px;padding:9px 12px;font-weight:750}}
 .status-bad{{background:var(--red-bg);border:1px solid #EFC5CB;color:#A53240;border-radius:11px;padding:9px 12px;font-weight:750}}
-.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:12.5px;font-weight:720}}
-.mini-help{{font-size:12.5px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:6px 9px;border-radius:9px;line-height:1.5}}
-.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:13.5px;gap:10px}}
+.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:13.83px;font-weight:720}}
+.mini-help{{font-size:13.83px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:6px 9px;border-radius:9px;line-height:1.5}}
+.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:14.83px;gap:10px}}
 .audit-row:last-child{{border-bottom:0}} .audit-ok{{color:#17785B;font-weight:800}} .audit-warn{{color:#A96A0B;font-weight:800}} .audit-bad{{color:#B93E4B;font-weight:800}}
-.g-badge{{display:inline-block;border-radius:7px;padding:3px 7px;font-size:10.8px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}}
+.g-badge{{display:inline-block;border-radius:7px;padding:3px 7px;font-size:12.13px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}}
 .g1{{background:#EDF8FF;color:#126A9A}} .g2{{background:#F2EEFF;color:#6743B1}} .g3{{background:#EAF8F2;color:#0B7A53}} .g0{{background:#F2F4F7;color:#536174}} .g4{{background:#FFF3E7;color:#A45B00}}
-.word-preview-note{{font-size:12.5px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
-.preview-toolbar{{font-size:12.5px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
+.word-preview-note{{font-size:13.83px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
+.preview-toolbar{{font-size:13.83px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
 .result-ok{{background:var(--green-bg);border:1px solid #BFE5D6;border-radius:11px;color:#116B50;padding:10px 12px;font-weight:750}}
-.footer{{text-align:center;color:#93A0AF;font-size:12px;margin-top:22px}}
+.footer{{text-align:center;color:#93A0AF;font-size:13.33px;margin-top:22px}}
 
 /* Tổng quan gọn - tối ưu màn hình máy tính ở 100% */
 .summary-compact{{
@@ -185,8 +185,8 @@ hr{{border-color:#E7EDF4}}
   background:#FFFFFF;border:1px solid var(--line);border-radius:11px;padding:6px 10px;
   box-shadow:0 2px 8px rgba(45,75,105,.035);min-height:50px;
 }}
-.summary-chip .v{{font-size:22px;font-weight:850;color:var(--primary);line-height:1.05}}
-.summary-chip .l{{font-size:12.5px;font-weight:700;color:var(--muted);margin-top:4px}}
+.summary-chip .v{{font-size:23.33px;font-weight:850;color:var(--primary);line-height:1.05}}
+.summary-chip .l{{font-size:13.83px;font-weight:700;color:var(--muted);margin-top:4px}}
 .part-status-grid{{
   display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:7px;margin:5px 0 7px;
 }}
@@ -194,12 +194,12 @@ hr{{border-color:#E7EDF4}}
   background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px 9px;
   display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:47px;
 }}
-.part-status-card .pn{{font-size:13.5px;font-weight:850;color:#203C5D}}
-.part-status-card .qc{{font-size:12.5px;color:#6D7F93;margin-top:2px}}
-.part-status-card .ans-ok{{font-size:12.5px;font-weight:850;color:#137A5A;text-align:right}}
-.part-status-card .ans-bad{{font-size:12.5px;font-weight:850;color:#B34A39;text-align:right}}
+.part-status-card .pn{{font-size:14.83px;font-weight:850;color:#203C5D}}
+.part-status-card .qc{{font-size:13.83px;color:#6D7F93;margin-top:2px}}
+.part-status-card .ans-ok{{font-size:13.83px;font-weight:850;color:#137A5A;text-align:right}}
+.part-status-card .ans-bad{{font-size:13.83px;font-weight:850;color:#B34A39;text-align:right}}
 .workspace-title{{
-  font-size:19px;font-weight:850;color:#193B61;margin:7px 0 5px;
+  font-size:20.33px;font-weight:850;color:#193B61;margin:7px 0 5px;
   display:flex;align-items:center;gap:8px;
 }}
 .workspace-title:before{{
@@ -231,50 +231,50 @@ hr{{margin:.45rem 0!important}}
 .auto-config-head{{
   display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px;
 }}
-.auto-config-title{{font-size:17px;font-weight:850;color:#173B65}}
-.auto-config-sub{{font-size:12px;color:#6D8096}}
+.auto-config-title{{font-size:18.33px;font-weight:850;color:#173B65}}
+.auto-config-sub{{font-size:13.33px;color:#6D8096}}
 .config-part-label{{
-  font-size:13.5px;font-weight:850;color:#173B65;line-height:1.35;padding-top:3px;
+  font-size:14.83px;font-weight:850;color:#173B65;line-height:1.35;padding-top:3px;
 }}
-.config-part-meta{{font-size:12px;color:#70839A;margin-top:3px}}
+.config-part-meta{{font-size:13.33px;color:#70839A;margin-top:3px}}
 .config-divider{{height:1px;background:#E8EEF5;margin:7px 0}}
 /* Rà soát từng phần */
 .review-part{{
   border:1px solid #DCE7F3;border-radius:11px;background:#FFFFFF;padding:9px 10px;margin:0 0 8px;
 }}
-.review-part-title{{font-size:13.5px;font-weight:850;color:#173B65}}
-.review-part-line{{font-size:12.5px;color:#40566F;margin-top:4px;line-height:1.45}}
+.review-part-title{{font-size:14.83px;font-weight:850;color:#173B65}}
+.review-part-line{{font-size:13.83px;color:#40566F;margin-top:4px;line-height:1.45}}
 .review-ok{{color:#137A5A;font-weight:850}}
 .review-bad{{color:#B33E35;font-weight:850}}
 .review-missing{{
   margin-top:6px;padding:6px 8px;border-radius:8px;background:#FFF4F1;
-  border:1px solid #F2D0C9;color:#A03B33;font-size:12px;font-weight:750;
+  border:1px solid #F2D0C9;color:#A03B33;font-size:13.33px;font-weight:750;
 }}
 .review-allok{{
   margin-top:6px;padding:6px 8px;border-radius:8px;background:#ECF8F2;
-  border:1px solid #C8ECDD;color:#137A5A;font-size:12px;font-weight:750;
+  border:1px solid #C8ECDD;color:#137A5A;font-size:13.33px;font-weight:750;
 }}
 
 
 /* Phân tích chi tiết đề / nhóm đặt phía trên preview */
 .analysis-detail-grid{{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:7px;margin:5px 0 9px}}
 .analysis-card{{background:#fff;border:1px solid #DCE7F3;border-radius:11px;padding:8px 10px;min-height:74px}}
-.analysis-card-title{{font-size:13.5px;font-weight:850;color:#173B65;line-height:1.3}}
-.analysis-card-meta{{font-size:12.5px;color:#40566F;margin-top:4px;line-height:1.45}}
-.analysis-card-ok{{font-size:12px;color:#137A5A;font-weight:800;margin-top:5px}}
-.analysis-card-bad{{font-size:12px;color:#B33E35;font-weight:800;margin-top:5px}}
+.analysis-card-title{{font-size:14.83px;font-weight:850;color:#173B65;line-height:1.3}}
+.analysis-card-meta{{font-size:13.83px;color:#40566F;margin-top:4px;line-height:1.45}}
+.analysis-card-ok{{font-size:13.33px;color:#137A5A;font-weight:800;margin-top:5px}}
+.analysis-card-bad{{font-size:13.33px;color:#B33E35;font-weight:800;margin-top:5px}}
 /* YoungMix cấu hình luôn mở theo hàng ngang */
-.ym-config-head{{font-size:17px;font-weight:850;color:#173B65;margin:6px 0 5px}}
-.ym-config-note{{font-size:12px;color:#6C8097;margin-bottom:6px}}
-.preview-side-title{{font-size:15px;font-weight:850;color:#173B65;margin-bottom:6px}}
-.preview-side-box{{background:#F8FBFF;border:1px solid #DCE7F3;border-radius:10px;padding:8px 9px;font-size:12.5px;color:#526A83;line-height:1.5}}
+.ym-config-head{{font-size:18.33px;font-weight:850;color:#173B65;margin:6px 0 5px}}
+.ym-config-note{{font-size:13.33px;color:#6C8097;margin-bottom:6px}}
+.preview-side-title{{font-size:16.33px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.preview-side-box{{background:#F8FBFF;border:1px solid #DCE7F3;border-radius:10px;padding:8px 9px;font-size:13.83px;color:#526A83;line-height:1.5}}
 @media(max-width:1200px){{.analysis-detail-grid{{grid-template-columns:repeat(2,1fr)}}}}
 
 
 .codes-live{{
   margin-top:4px;padding:7px 9px;border-radius:9px;
   background:#F2F7FD;border:1px solid #DCE8F4;color:#274761;
-  font-size:12.5px;line-height:1.35;word-break:break-word;
+  font-size:13.83px;line-height:1.35;word-break:break-word;
 }}
 
 
@@ -300,6 +300,20 @@ hr{{margin:.45rem 0!important}}
   text-align:center!important;
 }}
 
+
+
+/* Tăng thêm khoảng 1pt cho chữ điều khiển của Streamlit */
+.stButton > button,
+.stDownloadButton > button,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-baseweb="select"] *,
+[data-testid="stRadio"] label p,
+[data-testid="stCheckbox"] label p,
+[data-testid="stToggle"] label p,
+.stCaptionContainer p{{
+  font-size:15.8px!important;
+}}
 </style>
 
 <div class="hero">
@@ -898,18 +912,12 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
       • Dùng toàn bộ chiều rộng vùng preview ~70%.
     Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
     """
-    sig = hashlib.sha256(engine.file_bytes).hexdigest()
-    annotation_json = json.dumps(build_answer_annotation_spec(engine), ensure_ascii=False, sort_keys=True)
-    preview_bytes, stats = _prepare_browser_preview_docx(engine.file_bytes, sig, annotation_json)
+    # Xem trực tiếp CHÍNH FILE ĐỀ GỐC người dùng đã tải lên.
+    # Không chỉnh màu đáp án, không chèn đánh dấu và không thay nội dung DOCX.
+    preview_bytes = engine.file_bytes
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
-
-    conversion_note = f" • tô đỏ đúng {stats.get('answer_marks', 0)} phương án/đáp án theo kết quả phân tích DTMIX"
-    if stats.get("wmf_emf_total", 0):
-        if stats.get("converted_wmf_emf", 0):
-            conversion_note += f" • chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} WMF/EMF sang PNG"
-        else:
-            conversion_note += f" • có {stats['wmf_emf_total']} WMF/EMF legacy"
+    conversion_note = " • đang hiển thị nguyên bản DOCX đã tải lên"
 
     html_doc = f"""
 <!doctype html>
@@ -995,7 +1003,7 @@ function fitWidth(){{
       useBase64URL:true,
       ignoreLastRenderedPageBreak:false
    }});
-   document.getElementById('status').textContent='✓ Đã dựng DOCX: chữ, bảng, ảnh và Office Math/OMML{conversion_note}';
+   document.getElementById('status').textContent='✓ Đề gốc DOCX đã tải lên{conversion_note}';
    setTimeout(fitWidth,250);
  }}catch(e){{
    document.getElementById('status').textContent='Không dựng được DOCX trực tiếp.';
@@ -1054,9 +1062,8 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
     signature = hashlib.sha256(engine.file_bytes).hexdigest()
     with st.spinner("Đang dựng bản xem trước Word chính xác..."):
-        annotation_json = json.dumps(build_answer_annotation_spec(engine), ensure_ascii=False, sort_keys=True)
-        annotated_bytes, _stats = _prepare_browser_preview_docx(engine.file_bytes, signature, annotation_json)
-        pdf_bytes, err = _docx_to_pdf_bytes(annotated_bytes, signature + "_annotated")
+        # Bản PDF cũng được dựng trực tiếp từ file đề gốc, không qua bước tô/đánh dấu đáp án.
+        pdf_bytes, err = _docx_to_pdf_bytes(engine.file_bytes, signature + "_original")
 
     if pdf_bytes:
         # Lấy số trang nhẹ nhàng
@@ -1946,6 +1953,7 @@ with st.container(border=True):
     # Xác định engine hiện tại có đúng file/chế độ không
     if raw is not None:
         current_sig = hashlib.sha256(raw + str(is_youngmix).encode()).hexdigest()
+
     existing_engine = st.session_state.get("dtmix_engine")
     engine_ready = bool(
         existing_engine
@@ -1953,15 +1961,30 @@ with st.container(border=True):
         and st.session_state.get("dtmix_signature") == current_sig
     )
 
+    # TỰ ĐỘNG PHÂN TÍCH ngay khi người dùng chọn file hoặc đổi chế độ xử lý.
+    # Không cần bấm nút "Phân tích đề".
+    auto_analysis_error = None
+    if raw is not None and not engine_ready:
+        clear_engine()
+        with st.spinner("DTMIX đang tự động phân tích câu hỏi, đáp án, hình ảnh, bảng và công thức..."):
+            try:
+                eng = DTMIXWebEngine(
+                    raw,
+                    uploaded.name,
+                    youngmix=is_youngmix,
+                    header=header_values(),
+                )
+                st.session_state.dtmix_engine = eng
+                st.session_state.dtmix_signature = current_sig
+                st.session_state.mix_result = None
+                existing_engine = eng
+                engine_ready = True
+            except Exception as exc:
+                auto_analysis_error = exc
+                engine_ready = False
+
     with action_col:
         st.markdown('<div class="tool-card-title">4. 🚀 Trộn & xuất</div>', unsafe_allow_html=True)
-        analyze_clicked = st.button(
-            "🔎 PHÂN TÍCH ĐỀ",
-            type="primary",
-            use_container_width=True,
-            disabled=(raw is None or engine_ready),
-            key="top_analyze",
-        )
         mix_clicked = st.button(
             "🚀 TRỘN & TẢI ZIP",
             type="primary",
@@ -1970,25 +1993,16 @@ with st.container(border=True):
             key="top_mix",
         )
         if engine_ready:
-            st.caption("✅ Đã phân tích")
-        elif raw is not None:
-            st.caption("Chưa phân tích")
+            st.caption("✅ Đã tự động phân tích")
+        elif auto_analysis_error is not None:
+            st.caption("❌ Phân tích chưa thành công")
         else:
             st.caption("Chọn file DOCX")
 
-    if analyze_clicked and raw is not None:
-        clear_engine()
-        with st.spinner("DTMIX đang đọc câu hỏi, đáp án, hình ảnh, bảng và công thức..."):
-            try:
-                eng = DTMIXWebEngine(raw, uploaded.name, youngmix=is_youngmix, header=header_values())
-                st.session_state.dtmix_engine = eng
-                st.session_state.dtmix_signature = current_sig
-                st.session_state.mix_result = None
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Không phân tích được đề: {exc}")
-                with st.expander("Chi tiết lỗi"):
-                    st.exception(exc)
+    if auto_analysis_error is not None:
+        st.error(f"Không phân tích được đề: {auto_analysis_error}")
+        with st.expander("Chi tiết lỗi"):
+            st.exception(auto_analysis_error)
 
     if mix_clicked:
         st.session_state["pending_mix"] = True

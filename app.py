@@ -314,6 +314,99 @@ hr{{margin:.45rem 0!important}}
 .stCaptionContainer p{{
   font-size:15.8px!important;
 }}
+
+/* Căn giữa nội dung trong các ô tổng quan và PHẦN/NHÓM */
+.summary-chip{{
+  text-align:center!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:center!important;
+  align-items:center!important;
+}}
+.summary-chip .v,
+.summary-chip .l{{
+  width:100%!important;
+  text-align:center!important;
+}}
+.analysis-card{{
+  text-align:center!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:center!important;
+  align-items:center!important;
+}}
+.analysis-card-title,
+.analysis-card-meta,
+.analysis-card-ok,
+.analysis-card-bad{{
+  width:100%!important;
+  text-align:center!important;
+}}
+
+/* Khu vực tải đề gốc nổi bật hơn */
+.upload-zone-title{{
+  color:#0E5FA8;
+  font-weight:900;
+  font-size:16px;
+  text-align:center;
+  letter-spacing:.15px;
+  margin-bottom:2px;
+}}
+.upload-zone-sub{{
+  color:#50708F;
+  font-size:12.5px;
+  text-align:center;
+  margin-bottom:6px;
+}}
+[data-testid="stFileUploader"]{{
+  background:linear-gradient(135deg,#EAF5FF,#F4FAFF)!important;
+  border:2px solid #68AEEF!important;
+  border-radius:14px!important;
+  padding:7px!important;
+  box-shadow:0 5px 16px rgba(43,116,184,.12)!important;
+}}
+[data-testid="stFileUploaderDropzone"]{{
+  background:linear-gradient(135deg,#F7FBFF,#EAF5FF)!important;
+  border:2px dashed #4B9AE8!important;
+  border-radius:11px!important;
+}}
+.file-pill{{
+  display:block!important;
+  text-align:center!important;
+  background:#DDEFFF!important;
+  border:1px solid #89BEEE!important;
+  color:#0E5FA8!important;
+  font-weight:850!important;
+  padding:6px 10px!important;
+}}
+
+/* Trộn & xuất ngay sau phần tự động kiểm tra */
+.mix-action-wrap{{
+  margin:8px 0 5px;
+  padding:9px 12px;
+  border-radius:12px;
+  border:1px solid #CFE2F5;
+  background:linear-gradient(90deg,#EEF7FF,#F8FBFF);
+  text-align:center;
+}}
+.mix-action-title{{
+  color:#164D80;
+  font-size:17px;
+  font-weight:900;
+}}
+.mix-action-sub{{
+  color:#607A94;
+  font-size:12.5px;
+  margin-top:3px;
+}}
+.mix-ready-status{{
+  text-align:center;
+  color:#147253;
+  font-weight:800;
+  font-size:12.5px;
+  margin-top:4px;
+}}
+
 </style>
 
 <div class="hero">
@@ -912,12 +1005,33 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
       • Dùng toàn bộ chiều rộng vùng preview ~70%.
     Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
     """
-    # Xem trực tiếp CHÍNH FILE ĐỀ GỐC người dùng đã tải lên.
-    # Không chỉnh màu đáp án, không chèn đánh dấu và không thay nội dung DOCX.
-    preview_bytes = engine.file_bytes
+    # Xem trước = BẢN SAO của đề gốc, chỉ thêm màu đỏ cho đáp án đúng
+    # mà DTMIX đã nhận diện. File gốc engine.file_bytes hoàn toàn không bị sửa.
+    sig = hashlib.sha256(engine.file_bytes).hexdigest()
+    annotation_json = json.dumps(
+        build_answer_annotation_spec(engine),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    preview_bytes, stats = _prepare_browser_preview_docx(
+        engine.file_bytes,
+        sig,
+        annotation_json,
+    )
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
-    conversion_note = " • đang hiển thị nguyên bản DOCX đã tải lên"
+
+    conversion_note = (
+        f" • đã tô đỏ {stats.get('answer_marks', 0)} đáp án đúng theo kết quả phân tích DTMIX"
+    )
+    if stats.get("wmf_emf_total", 0):
+        if stats.get("converted_wmf_emf", 0):
+            conversion_note += (
+                f" • chuyển {stats['converted_wmf_emf']}/"
+                f"{stats['wmf_emf_total']} WMF/EMF sang PNG để xem trước"
+            )
+        else:
+            conversion_note += f" • có {stats['wmf_emf_total']} WMF/EMF legacy"
 
     html_doc = f"""
 <!doctype html>
@@ -1003,7 +1117,7 @@ function fitWidth(){{
       useBase64URL:true,
       ignoreLastRenderedPageBreak:false
    }});
-   document.getElementById('status').textContent='✓ Đề gốc DOCX đã tải lên{conversion_note}';
+   document.getElementById('status').textContent='✓ Đề gốc + đáp án đúng tô đỏ{conversion_note}';
    setTimeout(fitWidth,250);
  }}catch(e){{
    document.getElementById('status').textContent='Không dựng được DOCX trực tiếp.';
@@ -1062,8 +1176,21 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
     signature = hashlib.sha256(engine.file_bytes).hexdigest()
     with st.spinner("Đang dựng bản xem trước Word chính xác..."):
-        # Bản PDF cũng được dựng trực tiếp từ file đề gốc, không qua bước tô/đánh dấu đáp án.
-        pdf_bytes, err = _docx_to_pdf_bytes(engine.file_bytes, signature + "_original")
+        # Tạo BẢN SAO preview từ đề gốc và chỉ tô đỏ đáp án đúng.
+        annotation_json = json.dumps(
+            build_answer_annotation_spec(engine),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        annotated_bytes, _stats = _prepare_browser_preview_docx(
+            engine.file_bytes,
+            signature,
+            annotation_json,
+        )
+        pdf_bytes, err = _docx_to_pdf_bytes(
+            annotated_bytes,
+            signature + "_answers_red",
+        )
 
     if pdf_bytes:
         # Lấy số trang nhẹ nhàng
@@ -1916,13 +2043,13 @@ with st.container(border=True):
 
     st.divider()
 
-    # Bố cục người dùng yêu cầu: Đề gốc | Chế độ | Mã đề | Trộn & xuất
-    file_col, mode_col, code_col, action_col = st.columns([2.15, 1.35, 1.55, 1.25], gap="medium")
+    # Bố cục: Đề gốc | Chế độ | Mã đề. Nút Trộn & xuất nằm sau phần tự động kiểm tra.
+    file_col, mode_col, code_col = st.columns([2.45, 1.45, 1.65], gap="medium")
 
     current_sig = None
     raw = None
     with file_col:
-        st.markdown('<div class="tool-card-title">1. 📄 Đề gốc (.docx)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="upload-zone-title">1. 📄 ĐỀ GỐC (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
             "Đề gốc",
             type=["docx"],
@@ -1983,30 +2110,10 @@ with st.container(border=True):
                 auto_analysis_error = exc
                 engine_ready = False
 
-    with action_col:
-        st.markdown('<div class="tool-card-title">4. 🚀 Trộn & xuất</div>', unsafe_allow_html=True)
-        mix_clicked = st.button(
-            "🚀 TRỘN & TẢI ZIP",
-            type="primary",
-            use_container_width=True,
-            disabled=not engine_ready,
-            key="top_mix",
-        )
-        if engine_ready:
-            st.caption("✅ Đã tự động phân tích")
-        elif auto_analysis_error is not None:
-            st.caption("❌ Phân tích chưa thành công")
-        else:
-            st.caption("Chọn file DOCX")
-
     if auto_analysis_error is not None:
         st.error(f"Không phân tích được đề: {auto_analysis_error}")
         with st.expander("Chi tiết lỗi"):
             st.exception(auto_analysis_error)
-
-    if mix_clicked:
-        st.session_state["pending_mix"] = True
-        st.session_state["pending_codes"] = top_codes
 
 engine = st.session_state.get("dtmix_engine")
 if current_sig is not None and st.session_state.get("dtmix_signature") != current_sig:
@@ -2087,6 +2194,31 @@ if engine:
                 f'{esc(yg.get("q_type",""))} · {esc(yg.get("mix_type",""))} · {fixed_text}</div>{status}</div>'
             )
     st.markdown('<div class="analysis-detail-grid">'+''.join(detail_cards)+'</div>', unsafe_allow_html=True)
+
+    # -------- TRỘN & XUẤT: ngay sau kết quả tự động kiểm tra --------
+    st.markdown(
+        '<div class="mix-action-wrap">'
+        '<div class="mix-action-title">🚀 Trộn đề & xuất kết quả</div>'
+        '<div class="mix-action-sub">Đề đã được tự động kiểm tra. Kiểm tra số câu/đáp án ở các ô phía trên rồi bấm nút để trộn và tải ZIP.</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    mx1, mx2, mx3 = st.columns([1.1, 2.2, 1.1], gap="small")
+    with mx2:
+        mix_clicked = st.button(
+            "🚀 TRỘN ĐỀ & TẢI ZIP",
+            type="primary",
+            use_container_width=True,
+            disabled=not engine_ready,
+            key="after_analysis_mix",
+        )
+        st.markdown(
+            f'<div class="mix-ready-status">{"✅ Đã tự động kiểm tra đề" if engine_ready else "⏳ Chưa sẵn sàng"}</div>',
+            unsafe_allow_html=True,
+        )
+    if mix_clicked:
+        st.session_state["pending_mix"] = True
+        st.session_state["pending_codes"] = top_codes
 
     # -------- CẤU HÌNH TRỘN: cũng đặt trên preview --------
     if not engine.youngmix:
@@ -2175,7 +2307,7 @@ else:
         st.caption("Tải và phân tích đề để hiển thị cấu trúc, cấu hình và xem trước.")
 
 # ============================================================
-# MIX REQUEST FROM TOP TOOLBAR
+# MIX REQUEST FROM BUTTON AFTER ANALYSIS
 # ============================================================
 if engine and st.session_state.get("pending_mix"):
     st.session_state["pending_mix"] = False

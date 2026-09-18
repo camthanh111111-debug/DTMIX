@@ -93,20 +93,20 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
     var(--bg);
   color:var(--ink);
 }}
-.block-container{{max-width:none;width:100%;padding:.08rem 1.0rem 1.0rem}}
+.block-container{{max-width:none;width:100%;padding:.18rem 1.0rem 1.4rem}}
 #MainMenu,footer,header{{visibility:hidden}}
 
 /* Hero sáng, không nền đen */
 .hero{{
   background:linear-gradient(120deg,var(--hero1),var(--hero2));
   border:1px solid color-mix(in srgb,var(--primary) 18%, white);
-  border-radius:12px;padding:6px 12px;color:var(--hero-text);
-  box-shadow:0 6px 18px rgba(58,91,124,.07);position:relative;overflow:hidden;margin-bottom:3px;
+  border-radius:14px;padding:8px 15px;color:var(--hero-text);
+  box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:6px;
 }}
 .hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
 .hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
 .hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:26.33px}}
-.hero-title{{font-size:24.5px;font-weight:900;letter-spacing:-.25px;line-height:1.2}}
+.hero-title{{font-size:26.33px;font-weight:850;letter-spacing:-.3px;line-height:1}}
 .hero-sub{{font-size:14.83px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
 .hero-side{{margin-left:auto;text-align:right;max-width:330px}}
 .hero-side b{{font-size:14.33px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:13.33px;margin-top:4px}}
@@ -214,13 +214,13 @@ hr{{border-color:#E7EDF4}}
 @media(max-width:1000px){{.hero-side{{display:none}}}}
 
 /* Dồn các khối Streamlit lên gần nhau hơn */
-[data-testid="stVerticalBlock"]{{gap:.28rem!important}}
-[data-testid="stHorizontalBlock"]{{gap:.48rem!important}}
+[data-testid="stVerticalBlock"]{{gap:.48rem!important}}
+[data-testid="stHorizontalBlock"]{{gap:.65rem!important}}
 [data-testid="stFileUploader"]{{margin-bottom:.1rem!important}}
-[data-testid="stFileUploaderDropzone"]{{padding:.30rem .55rem!important;min-height:58px!important}}
+[data-testid="stFileUploaderDropzone"]{{padding:.45rem .7rem!important;min-height:72px!important}}
 [data-testid="stMetric"]{{padding:7px 10px!important}}
 .stElementContainer{{margin-bottom:.05rem!important}}
-hr{{margin:.20rem 0!important}}
+hr{{margin:.45rem 0!important}}
 
 
 /* Cấu hình trộn tự động luôn mở, hiển thị theo hàng ngang */
@@ -353,15 +353,10 @@ hr{{margin:.20rem 0!important}}
   margin-bottom:2px;
 }}
 .upload-zone-sub{{
-  display:table;
-  color:#124F84;
-  background:#D9ECFF;
-  font-size:13px;
-  font-weight:800;
+  color:#50708F;
+  font-size:12.5px;
   text-align:center;
-  margin:2px auto 5px;
-  padding:4px 11px;
-  border-radius:8px;
+  margin-bottom:6px;
 }}
 [data-testid="stFileUploader"]{{
   width:52%!important;
@@ -375,12 +370,11 @@ hr{{margin:.20rem 0!important}}
   box-shadow:none!important;
 }}
 [data-testid="stFileUploaderDropzone"]{{
-  background:#DDEEFF!important;
+  background:#E7F3FF!important;
   border:0!important;
-  border-radius:9px!important;
+  border-radius:10px!important;
   box-shadow:none!important;
-  padding:.30rem .55rem!important;
-  min-height:58px!important;
+  padding:.45rem .65rem!important;
 }}
 .file-pill{{
   display:block!important;
@@ -423,26 +417,16 @@ hr{{margin:.20rem 0!important}}
   margin-top:4px;
 }}
 
-
-.hero-title-only{{text-align:center!important;padding:1px 0!important}}
-[data-testid="stFileUploaderDropzone"] p,
-[data-testid="stFileUploaderDropzone"] small,
-[data-testid="stFileUploaderDropzone"] span{{
-  color:#173F68!important;
-}}
-[data-testid="stFileUploaderDropzone"] p{{font-weight:700!important}}
-[data-testid="stVerticalBlockBorderWrapper"] > div{{
-  padding-top:.18rem!important;
-  padding-bottom:.18rem!important;
-}}
-.upload-zone-title{{margin-top:0!important;margin-bottom:1px!important}}
-[data-testid="stFileUploader"]{{margin-top:0!important;margin-bottom:0!important}}
-.tool-card-title{{margin-top:0!important;margin-bottom:3px!important}}
-
 </style>
 
 <div class="hero">
-  <div class="hero-title hero-title-only">DTMIX trộn đề trắc nghiệm in ngay</div>
+ <div class="hero-row">
+   <div class="hero-icon">🧪</div>
+   <div>
+     <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700">V1.3</span></div>
+     <div class="hero-sub">Trộn đề Word trực tuyến • rà soát đáp án • YoungMix g1/g2/g3 • xem trước giống Word</div>
+   </div>
+ </div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -2091,6 +2075,7 @@ with st.container(border=True):
     h5.text_input("Môn thi", key="hdr_monthi")
     h6.text_input("Thời gian làm bài", key="hdr_thoigian")
 
+    st.divider()
 
     # Bố cục: Đề gốc | Chế độ | Mã đề. Nút Trộn & xuất nằm sau phần tự động kiểm tra.
     file_col, mode_col, code_col = st.columns([2.45, 1.45, 1.65], gap="medium")
@@ -2108,6 +2093,8 @@ with st.container(border=True):
         )
         if uploaded:
             raw = uploaded.getvalue()
+            st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
+            st.caption(f"{len(raw)/1024:.1f} KB")
 
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)

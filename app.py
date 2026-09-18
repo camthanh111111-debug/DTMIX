@@ -270,6 +270,13 @@ hr{{margin:.45rem 0!important}}
 .preview-side-box{{background:#F8FBFF;border:1px solid #DCE7F3;border-radius:10px;padding:8px 9px;font-size:12.5px;color:#526A83;line-height:1.5}}
 @media(max-width:1200px){{.analysis-detail-grid{{grid-template-columns:repeat(2,1fr)}}}}
 
+
+.codes-live{{
+  margin-top:4px;padding:7px 9px;border-radius:9px;
+  background:#F2F7FD;border:1px solid #DCE8F4;color:#274761;
+  font-size:12.5px;line-height:1.35;word-break:break-word;
+}}
+
 </style>
 
 <div class="hero">
@@ -486,89 +493,137 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
                 parent.insert(pos+off, nr)
             parent.remove(run)
 
-    def _lookup_question(mode, unit_idx, qnum):
+    def _lookup_question_by_seq(mode, unit_idx, seq_idx):
+        """
+        Lấy câu theo THỨ TỰ xuất hiện trong phần/nhóm.
+        Không dùng số câu in trên đề vì số câu có thể lặp lại khi sang PHẦN II/III
+        hoặc đề gốc đánh số không liên tục.
+        """
         units = spec.get("groups" if mode == "ym" else "parts", [])
         if not units:
             return None
-        unit_idx = max(0, min(unit_idx, len(units)-1))
+        unit_idx = max(0, min(unit_idx, len(units) - 1))
         qs = units[unit_idx].get("questions", [])
-        for q in qs:
-            if int(q.get("number", -1)) == int(qnum):
-                return q
+        if 0 <= seq_idx < len(qs):
+            return qs[seq_idx]
         return None
 
     def _annotate_document_xml(xml_bytes):
+        """
+        Quy tắc tô đỏ preview:
+        1) Xóa màu đỏ cũ khỏi bản preview.
+        2) Đi qua câu hỏi theo đúng THỨ TỰ xuất hiện trong DOCX.
+        3) Với mỗi câu, chỉ lấy đáp án từ parsed_data của DTMIX.
+        4) Chỉ phương án đúng được tô đỏ; các phương án còn lại ép về đen.
+        """
         try:
             root = etree.fromstring(xml_bytes)
         except Exception:
             return xml_bytes
+
         _neutralize_existing_red(root)
 
         mode = "ym" if spec.get("youngmix") else "std"
+        units = spec.get("groups" if mode == "ym" else "parts", [])
         current_unit = 0
+        question_seq = -1
         current_question = None
         seen_ym_tag = False
-        roman_map = {"I":0, "II":1, "III":2, "IV":3}
+        roman_map = {"I": 0, "II": 1, "III": 2, "IV": 3}
+
+        # Chỉ coi là câu hỏi khi "Câu n" nằm ở ĐẦU đoạn.
+        # Nhờ vậy câu mô tả kiểu "trả lời từ câu 1 đến câu 12" không bị hiểu nhầm.
+        question_heading_re = re.compile(
+            r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\b"
+        )
 
         for p in root.xpath('.//w:p', namespaces=NS):
             runs = p.xpath('./w:r', namespaces=NS)
-            infos=[]; pos=0
+            infos = []
+            pos = 0
             for run in runs:
-                txt=_run_text(run)
+                txt = _run_text(run)
                 if txt:
-                    infos.append((run,pos,pos+len(txt),txt)); pos += len(txt)
-            full=''.join(x[3] for x in infos)
+                    infos.append((run, pos, pos + len(txt), txt))
+                    pos += len(txt)
+
+            full = ''.join(x[3] for x in infos)
             if not full.strip():
                 continue
 
-            if mode == 'std':
+            # ----- Xác định phần/nhóm -----
+            if mode == "std":
                 pm = re.search(r'(?i)\bPHẦN\s+(IV|III|II|I)\b', full)
                 if pm:
                     candidate = roman_map.get(pm.group(1).upper(), current_unit)
-                    if candidate < len(spec.get('parts', [])):
+                    if candidate < len(units):
                         current_unit = candidate
+                        question_seq = -1
                         current_question = None
             else:
-                # Mỗi thẻ <g0>...<g4>, <#g3> mở một nhóm mới theo thứ tự parse.
+                # Với YoungMix có tag thật: mỗi <g0>...<g4> mở một group mới.
+                # Với YoungMix "Tự động" không có tag: giữ nguyên 1 group và đi tuần tự toàn đề.
                 if re.search(r'(?i)<\s*#?g[0-4]\s*>', full):
                     if seen_ym_tag:
-                        current_unit = min(current_unit + 1, max(0, len(spec.get('groups', []))-1))
+                        current_unit = min(current_unit + 1, max(0, len(units) - 1))
                     else:
                         seen_ym_tag = True
                         current_unit = 0
+                    question_seq = -1
                     current_question = None
 
-            qm = re.search(r'(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)', full)
-            if qm:
-                current_question = _lookup_question(mode, current_unit, int(qm.group(1)))
+            # ----- Bắt đầu câu mới theo thứ tự xuất hiện -----
+            if question_heading_re.search(full):
+                question_seq += 1
+                current_question = _lookup_question_by_seq(mode, current_unit, question_seq)
 
             if not current_question:
                 continue
 
-            correct = set(current_question.get('correct_letters', []))
-            # Chỉ xử lý đoạn có marker A./B./C./D...; các chữ đỏ khác đã được đưa về đen.
-            marks = list(re.finditer(r'(?i)(?:^|[\s\u00A0\u200B\uFFFC])#?([A-G])[\.\)]', full))
+            correct = set(current_question.get("correct_letters", []))
+
+            # ----- Trắc nghiệm / Đúng-Sai -----
+            # Nhận cả A. B. C. D. và a) b) c) d), nhưng chỉ tô đỏ nếu parsed_data nói là đúng.
+            marks = list(
+                re.finditer(
+                    r'(?i)(?:^|[\s\u00A0\u200B\uFFFC])#?([A-G])[\.\)]',
+                    full,
+                )
+            )
             if marks:
-                intervals=[]
-                for i,m in enumerate(marks):
-                    # start tại ký tự chữ cái để không ăn vào khoảng trắng trước marker
+                intervals = []
+                for i, m in enumerate(marks):
                     seg_start = m.start(1)
-                    seg_end = marks[i+1].start(1) if i+1 < len(marks) else len(full)
+                    seg_end = marks[i + 1].start(1) if i + 1 < len(marks) else len(full)
                     letter = m.group(1).upper()
-                    intervals.append((seg_start, seg_end, 'FF0000' if letter in correct else '000000'))
-                    if letter in correct:
+                    is_correct = letter in correct
+                    intervals.append(
+                        (seg_start, seg_end, 'FF0000' if is_correct else '000000')
+                    )
+                    if is_correct:
                         stats['answer_marks'] += 1
+
                 _apply_option_intervals(p, infos, intervals)
                 continue
 
-            # Trả lời ngắn: chỉ tô dòng chứa đáp án của câu loại 3.
+            # ----- Trả lời ngắn -----
             if int(current_question.get('q_type', 0) or 0) == 3:
-                if re.search(r'(?i)\bđáp\s*án\s*[:\.]', full) or re.search(r'(?i)^\s*A\.\s*[-+]?\d', full):
+                # Chỉ tô chính đoạn đáp án, không tô các dòng khác của câu.
+                if re.search(r'(?i)^\s*Đáp\s*án\s*[:\.]', full):
+                    for run, *_ in infos:
+                        _set_color(run, 'FF0000')
+                    stats['answer_marks'] += 1
+                elif re.search(r'(?i)^\s*A\.\s*[-+]?\d', full):
                     for run, *_ in infos:
                         _set_color(run, 'FF0000')
                     stats['answer_marks'] += 1
 
-        return etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone='yes')
+        return etree.tostring(
+            root,
+            xml_declaration=True,
+            encoding='UTF-8',
+            standalone='yes',
+        )
 
     try:
         zin=zipfile.ZipFile(io.BytesIO(file_bytes),'r')
@@ -632,7 +687,7 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     b64 = base64.b64encode(preview_bytes).decode("ascii")
     js_data = json.dumps(b64)
 
-    conversion_note = f" • tô đỏ {stats.get('answer_marks', 0)} đáp án DTMIX đã nhận diện"
+    conversion_note = f" • tô đỏ đúng {stats.get('answer_marks', 0)} phương án/đáp án theo kết quả phân tích DTMIX"
     if stats.get("wmf_emf_total", 0):
         if stats.get("converted_wmf_emf", 0):
             conversion_note += f" • chuyển {stats['converted_wmf_emf']}/{stats['wmf_emf_total']} WMF/EMF sang PNG"
@@ -829,27 +884,128 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
     show_rich_preview(rich_standard_part_html(engine, None, True), height=780)
 
 
+def _default_manual_codes(n: int) -> list[str]:
+    """Sinh đúng n mã mặc định, ổn định và dễ nhìn."""
+    return [str(111 * i) for i in range(1, n + 1)]
+
+
+def _normalize_manual_codes(raw: str, n: int) -> list[str]:
+    """
+    Luôn trả về ĐÚNG n mã.
+    - Giữ các mã người dùng đã nhập theo thứ tự.
+    - Nếu thiếu thì tự bổ sung mã chưa trùng.
+    - Nếu thừa thì cắt còn n.
+    """
+    codes = [x.strip() for x in re.split(r"[,;\n]+", raw or "") if x.strip()]
+    # loại trùng nhưng giữ thứ tự
+    unique = []
+    for c in codes:
+        if c not in unique:
+            unique.append(c)
+    codes = unique[:n]
+
+    # bổ sung nếu còn thiếu
+    candidate_pool = _default_manual_codes(max(n, 24))
+    next_seq = 101
+    while len(codes) < n:
+        candidate = candidate_pool[len(codes)] if len(codes) < len(candidate_pool) else str(next_seq)
+        while candidate in codes:
+            next_seq += 1
+            candidate = str(next_seq)
+        codes.append(candidate)
+        next_seq += 1
+    return codes
+
+
+def _sync_manual_code_count(prefix: str) -> None:
+    """
+    Callback chạy NGAY khi ô 'Số đề' thay đổi.
+    Nếu đang dùng mã thủ công, tự co/giãn danh sách mã về đúng số đề.
+    """
+    n = int(st.session_state.get(f"{prefix}_top_n", 4))
+    manual_key = f"{prefix}_top_manual"
+    current = st.session_state.get(manual_key, "")
+    st.session_state[manual_key] = ", ".join(_normalize_manual_codes(current, n))
+    st.session_state[f"{prefix}_last_n"] = n
+
+
 def compact_codes_ui(prefix: str) -> list[str]:
     c1, c2 = st.columns([.8, 1.2], gap="small")
-    n = int(c1.number_input("Số đề", 1, 24, 4, step=1, key=f"{prefix}_top_n"))
-    kind = c2.selectbox("Kiểu mã", ["111, 222...", "Liên tiếp", "Thủ công"], key=f"{prefix}_top_kind")
+
+    n = int(
+        c1.number_input(
+            "Số đề",
+            min_value=1,
+            max_value=24,
+            value=4,
+            step=1,
+            key=f"{prefix}_top_n",
+            on_change=_sync_manual_code_count,
+            args=(prefix,),
+        )
+    )
+
+    kind = c2.selectbox(
+        "Kiểu mã",
+        ["111, 222...", "Liên tiếp", "Thủ công"],
+        key=f"{prefix}_top_kind",
+    )
+
+    # Ghi nhớ số đề hiện tại để khi vừa chuyển sang "Thủ công" cũng đồng bộ ngay.
+    last_n_key = f"{prefix}_last_n"
+    manual_key = f"{prefix}_top_manual"
+    if st.session_state.get(last_n_key) != n:
+        # Chỉ sửa state trước khi widget manual được tạo.
+        st.session_state[manual_key] = ", ".join(
+            _normalize_manual_codes(st.session_state.get(manual_key, ""), n)
+        )
+        st.session_state[last_n_key] = n
 
     if kind == "111, 222...":
         codes = [str(111 * i) for i in range(1, n + 1)]
-        st.text_input("Mã đề", ", ".join(codes), disabled=True, key=f"{prefix}_top_std")
+        # Không dùng text_input disabled vì widget state có thể giữ giá trị cũ.
+        st.markdown(
+            f'<div class="codes-live"><b>{n} mã đề:</b> {esc(", ".join(codes))}</div>',
+            unsafe_allow_html=True,
+        )
+
     elif kind == "Liên tiếp":
-        start = st.text_input("Mã đầu", "101", key=f"{prefix}_top_start")
-        if start.strip().isdigit():
-            first = int(start.strip()); width = len(start.strip())
+        start_code = st.text_input("Mã đầu", "101", key=f"{prefix}_top_start")
+        if start_code.strip().isdigit():
+            first = int(start_code.strip())
+            width = len(start_code.strip())
             codes = [str(first + i).zfill(width) for i in range(n)]
-            st.caption("→ " + ", ".join(codes))
+            st.markdown(
+                f'<div class="codes-live"><b>{n} mã đề:</b> {esc(", ".join(codes))}</div>',
+                unsafe_allow_html=True,
+            )
         else:
             codes = []
             st.caption("⚠ Mã đầu phải là số.")
+
     else:
-        raw_codes = st.text_input("Mã đề", "111, 222, 333, 444", key=f"{prefix}_top_manual")
-        codes = [x.strip() for x in re.split(r"[,;\n]+", raw_codes) if x.strip()]
-        st.caption(f"{len(codes)} mã")
+        # Bảo đảm state tồn tại và có đúng n mã trước khi tạo widget.
+        if manual_key not in st.session_state:
+            st.session_state[manual_key] = ", ".join(_default_manual_codes(n))
+        else:
+            normalized = _normalize_manual_codes(st.session_state[manual_key], n)
+            if len([x for x in re.split(r"[,;\n]+", st.session_state[manual_key]) if x.strip()]) != n:
+                st.session_state[manual_key] = ", ".join(normalized)
+
+        raw_codes = st.text_input(
+            "Mã đề",
+            key=manual_key,
+            help="Danh sách luôn được đồng bộ theo số đề. Có thể sửa từng mã nếu muốn.",
+        )
+        codes = _normalize_manual_codes(raw_codes, n)
+
+        # Nếu người dùng vừa sửa danh sách không đủ n mã, vẫn dùng đúng n mã và báo rõ.
+        entered = [x.strip() for x in re.split(r"[,;\n]+", raw_codes or "") if x.strip()]
+        if len(entered) != n:
+            st.caption(f"DTMIX sẽ dùng đúng {n} mã: " + ", ".join(codes))
+        else:
+            st.caption(f"✓ {n} mã đề")
+
     return codes
 
 

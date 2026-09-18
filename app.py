@@ -131,35 +131,35 @@ html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
 .stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
 
 /* Chữ rõ hơn, không cắt label */
-[data-testid="stWidgetLabel"] p{font-weight:700!important;color:#30455E!important;font-size:13.5px!important}
-[data-testid="stMarkdownContainer"] p{line-height:1.48}
-[data-testid="stToggle"] label{width:100%!important}
-[data-testid="stToggle"] label p{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}
-[data-baseweb="select"] *{font-size:13.5px!important}
-.stCaptionContainer{color:#73859A!important}
-div[data-testid="stHorizontalBlock"]{align-items:flex-start}
+[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:13.5px!important}}
+[data-testid="stMarkdownContainer"] p{{line-height:1.48}}
+[data-testid="stToggle"] label{{width:100%!important}}
+[data-testid="stToggle"] label p{{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}}
+[data-baseweb="select"] *{{font-size:13.5px!important}}
+.stCaptionContainer{{color:#73859A!important}}
+div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
 
 /* Thanh công cụ trên cùng */
-.tool-card-title{font-size:13.5px;font-weight:850;color:#173B65;margin-bottom:6px}
-.top-hint{font-size:11px;color:#6D8096;line-height:1.35;margin-top:5px}
-.top-status{font-size:11.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}
+.tool-card-title{{font-size:13.5px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.top-hint{{font-size:11px;color:#6D8096;line-height:1.35;margin-top:5px}}
+.top-status{{font-size:11.5px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
 
 /* Thông tin đề dạng ngang */
-.exam-info{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}
-.exam-info>div{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:12.2px;color:#30455E}
-.exam-info>div:nth-child(3n){border-right:0}
-.exam-info>div:nth-last-child(-n+3){border-bottom:0}
-.exam-info b{color:#173B65;margin-right:5px}
+.exam-info{{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}}
+.exam-info>div{{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:12.2px;color:#30455E}}
+.exam-info>div:nth-child(3n){{border-right:0}}
+.exam-info>div:nth-last-child(-n+3){{border-bottom:0}}
+.exam-info b{{color:#173B65;margin-right:5px}}
 
 /* Workspace */
-.preview-shell{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}
-.preview-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}
-.preview-heading b{font-size:16px;color:#143A66}
-.preview-badge{font-size:11px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}
+.preview-shell{{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}}
+.preview-heading{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}}
+.preview-heading b{{font-size:16px;color:#143A66}}
+.preview-badge{{font-size:11px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
 
 /* Right panel clarity */
-.control-title{font-size:16px;font-weight:850;color:#173B65;margin:2px 0 8px}
-.control-note{font-size:11.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}
+.control-title{{font-size:16px;font-weight:850;color:#173B65;margin:2px 0 8px}}
+.control-note{{font-size:11.5px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
 .stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
 hr{{border-color:#E7EDF4}}
 

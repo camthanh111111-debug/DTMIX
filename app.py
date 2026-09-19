@@ -18,7 +18,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from docx.oxml.ns import qn
 from lxml import etree
-trô
+
 try:
     import fitz  # PyMuPDF - dùng để dựng trang PDF thành ảnh preview
 except Exception:
@@ -424,7 +424,7 @@ hr{{margin:.45rem 0!important}}
    <div class="hero-icon">🧪</div>
    <div>
      <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700">V1.3</span></div>
-     <div class="hero-sub">Trộn đề trực tuyến • rà soát đáp án• xem trước đề gốc xuất ra</div>
+     <div class="hero-sub">Trộn đề trực tuyến • rà soát đáp án • xem trước đề gốc in ra</div>
    </div>
  </div>
 </div>

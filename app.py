@@ -2196,7 +2196,7 @@ with st.container(border=True):
                             st.rerun()
 
     with mode_col:
-        st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
+        st.markdown('<div class="tool-card-title">2. ⚙️ Chọn chế độ xử lý</div>', unsafe_allow_html=True)
         mode = st.radio(
             "Chế độ",
             ["Tự động PHẦN I–IV", "Kí hiệu nhóm g1/g2/g3/g4"],

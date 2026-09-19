@@ -50,7 +50,12 @@ st.set_page_config(
 #   SUPABASE_URL = "https://xxxx.supabase.co"
 #   SUPABASE_ANON_KEY = "sb_publishable_..."
 #   DTMIX_ALLOW_SIGNUP = true
-#   DTMIX_ENFORCE_SUBSCRIPTION = false
+#   DTMIX_PUBLIC_URL = "https://dtmix.a1dbm.io.vn/"
+#   DTMIX_OAUTH_STATE_SECRET = "..."
+
+FREE_MIX_LIMIT = 3
+PLAN_PRICES_VND = {"YEAR1": 50_000, "YEAR2": 100_000}
+PAID_PLANS = {"YEAR", "YEAR1", "YEAR2"}
 
 
 def _secret_value(name: str, default: str = "") -> str:
@@ -169,7 +174,7 @@ def _clear_workspace_session() -> None:
 def _clear_auth_session(*, clear_workspace: bool = False) -> None:
     for key in (
         "auth_access_token", "auth_refresh_token", "auth_expires_at",
-        "auth_user", "auth_subscription",
+        "auth_user", "auth_subscription", "auth_mix_usage",
     ):
         st.session_state.pop(key, None)
     if clear_workspace:
@@ -271,14 +276,104 @@ def _load_subscription() -> dict:
     return fallback
 
 
+def _load_mix_usage() -> dict:
+    user = st.session_state.get("auth_user") or {}
+    user_id = user.get("id")
+    token = st.session_state.get("auth_access_token")
+    fallback = {"successful_mixes": 0, "updated_at": None, "source": "fallback"}
+    if not user_id or not token:
+        return fallback
+    try:
+        rows = _supabase_json(
+            "/rest/v1/mix_usage",
+            access_token=token,
+            query={
+                "user_id": f"eq.{user_id}",
+                "select": "successful_mixes,updated_at",
+                "limit": "1",
+            },
+        )
+        if isinstance(rows, list) and rows:
+            row = dict(rows[0])
+            row["successful_mixes"] = int(row.get("successful_mixes") or 0)
+            row["source"] = "database"
+            return row
+    except Exception:
+        pass
+    return fallback
+
+
+def _plan_code(subscription: dict | None = None) -> str:
+    subscription = subscription or st.session_state.get("auth_subscription") or {}
+    return str(subscription.get("plan") or "FREE").upper()
+
+
+def _plan_label(subscription: dict | None = None) -> str:
+    code = _plan_code(subscription)
+    return {
+        "FREE": "FREE",
+        "YEAR": "1 NĂM",
+        "YEAR1": "1 NĂM",
+        "YEAR2": "2 NĂM",
+        "ADMIN": "ADMIN",
+    }.get(code, code)
+
+
+def _free_mix_used(usage: dict | None = None) -> int:
+    usage = usage or st.session_state.get("auth_mix_usage") or {}
+    try:
+        return max(0, int(usage.get("successful_mixes") or 0))
+    except Exception:
+        return 0
+
+
+def _free_mix_remaining(usage: dict | None = None) -> int:
+    return max(0, FREE_MIX_LIMIT - _free_mix_used(usage))
+
+
+def _record_successful_mix() -> dict:
+    """Ghi nhận 1 lượt trộn thành công. FREE chỉ được tối đa 3 lượt toàn tài khoản."""
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return {"allowed": False, "reason": "Bạn chưa đăng nhập."}
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_record_successful_mix",
+        method="POST",
+        payload={},
+        access_token=token,
+    )
+    row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    # Tải lại số lượt sau RPC để giao diện luôn đồng bộ.
+    st.session_state["auth_mix_usage"] = _load_mix_usage()
+    return row
+
+
+def _request_upgrade(plan: str) -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Bạn cần đăng nhập trước khi đăng ký gói.")
+    plan = str(plan or "").upper()
+    if plan not in PLAN_PRICES_VND:
+        raise DTMIXAuthError("Gói đăng ký không hợp lệ.")
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_request_upgrade",
+        method="POST",
+        payload={"p_plan": plan},
+        access_token=token,
+    )
+    return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
 def _subscription_is_allowed(subscription: dict) -> tuple[bool, str]:
-    plan = str(subscription.get("plan") or "FREE").upper()
+    plan = _plan_code(subscription)
     status = str(subscription.get("status") or "active").lower()
     if plan == "ADMIN":
         return True, ""
     if status not in {"active", "trial", "trialing"}:
         return False, "Gói sử dụng hiện không hoạt động."
     expires_at = subscription.get("expires_at")
+    if plan in PAID_PLANS and not expires_at:
+        return False, "Gói trả phí chưa có thời hạn sử dụng."
     if expires_at:
         try:
             dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
@@ -326,13 +421,20 @@ def _auth_logged_in() -> bool:
     return bool(st.session_state.get("auth_access_token") and st.session_state.get("auth_user"))
 
 
-def _auth_can_use_app() -> bool:
+def _auth_access_reason() -> tuple[bool, str]:
     if not _auth_logged_in():
-        return False
-    if not _secret_bool("DTMIX_ENFORCE_SUBSCRIPTION", False):
-        return True
-    allowed, _ = _subscription_is_allowed(st.session_state.get("auth_subscription") or {})
-    return allowed
+        return False, "Hãy đăng nhập để sử dụng DTMIX."
+    subscription = st.session_state.get("auth_subscription") or {}
+    allowed, reason = _subscription_is_allowed(subscription)
+    if not allowed:
+        return False, reason
+    if _plan_code(subscription) == "FREE" and _free_mix_remaining() <= 0:
+        return False, "Bạn đã dùng hết 3 lượt trộn miễn phí. Hãy nâng cấp gói để tiếp tục sử dụng."
+    return True, ""
+
+
+def _auth_can_use_app() -> bool:
+    return _auth_access_reason()[0]
 
 
 def _auth_config_ready() -> bool:
@@ -434,6 +536,7 @@ def _handle_google_oauth_callback() -> None:
             raise DTMIXAuthError("Google không trả về phiên đăng nhập hợp lệ.")
         _store_auth_session(data)
         st.session_state["auth_subscription"] = _load_subscription()
+        st.session_state["auth_mix_usage"] = _load_mix_usage()
         st.session_state["auth_just_logged_in"] = True
         st.session_state["auth_google_success"] = True
     except DTMIXAuthError as exc:
@@ -524,6 +627,7 @@ def _login_form_body() -> None:
                 with st.spinner("Đang đăng nhập..."):
                     _login_with_password(email, password)
                     st.session_state["auth_subscription"] = _load_subscription()
+                    st.session_state["auth_mix_usage"] = _load_mix_usage()
                 st.session_state["auth_just_logged_in"] = True
                 st.rerun()
             except DTMIXAuthError as exc:
@@ -565,6 +669,7 @@ def _signup_form_body() -> None:
                 if data.get("access_token"):
                     _store_auth_session(data)
                     st.session_state["auth_subscription"] = _load_subscription()
+                    st.session_state["auth_mix_usage"] = _load_mix_usage()
                     st.session_state["auth_just_logged_in"] = True
                     st.session_state["auth_just_registered"] = True
                     st.rerun()
@@ -573,6 +678,38 @@ def _signup_form_body() -> None:
             except DTMIXAuthError as exc:
                 st.error(str(exc))
     _render_google_login_button()
+
+
+def _upgrade_body() -> None:
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">💎</div>'
+        '<div><div class="auth-dialog-title">Nâng cấp DTMIX</div>'
+        '<div class="auth-dialog-sub">Gói trả phí không giới hạn số lượt trộn trong thời hạn sử dụng.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="upgrade-grid">'
+        '<div class="upgrade-card"><div class="upgrade-name">GÓI 1 NĂM</div><div class="upgrade-price">50.000đ</div><div class="upgrade-note">Sử dụng đầy đủ DTMIX trong 12 tháng</div></div>'
+        '<div class="upgrade-card"><div class="upgrade-name">GÓI 2 NĂM</div><div class="upgrade-price">100.000đ</div><div class="upgrade-note">Sử dụng đầy đủ DTMIX trong 24 tháng</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2, gap="small")
+    with c1:
+        choose1 = st.button("Đăng ký gói 1 năm", type="primary", use_container_width=True, key="upgrade_year1")
+    with c2:
+        choose2 = st.button("Đăng ký gói 2 năm", use_container_width=True, key="upgrade_year2")
+    chosen = "YEAR1" if choose1 else ("YEAR2" if choose2 else "")
+    if chosen:
+        try:
+            _request_upgrade(chosen)
+            st.success(
+                f"Đã ghi nhận yêu cầu gói {'1 năm' if chosen == 'YEAR1' else '2 năm'} "
+                f"({PLAN_PRICES_VND[chosen]:,}đ). Quản trị viên sẽ kích hoạt sau khi xác nhận thanh toán.".replace(",", ".")
+            )
+        except DTMIXAuthError as exc:
+            st.error(str(exc))
+    st.caption("Gói FREE: 3 lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
 
 
 # Streamlit Community Cloud hiện hỗ trợ st.dialog. Có fallback để file vẫn chạy
@@ -585,6 +722,10 @@ if hasattr(st, "dialog"):
     @st.dialog("Đăng ký tài khoản", width="small")
     def _signup_dialog():
         _signup_form_body()
+
+    @st.dialog("Nâng cấp DTMIX", width="small")
+    def _upgrade_dialog():
+        _upgrade_body()
 else:
     def _login_dialog():
         st.session_state["auth_inline_panel"] = "login"
@@ -594,6 +735,10 @@ else:
         st.session_state["auth_inline_panel"] = "signup"
         st.rerun()
 
+    def _upgrade_dialog():
+        st.session_state["auth_inline_panel"] = "upgrade"
+        st.rerun()
+
 
 _handle_google_oauth_callback()
 
@@ -601,8 +746,10 @@ _handle_google_oauth_callback()
 _refresh_auth_if_needed()
 if _auth_logged_in():
     st.session_state["auth_subscription"] = _load_subscription()
+    st.session_state["auth_mix_usage"] = _load_mix_usage()
 else:
     st.session_state.pop("auth_subscription", None)
+    st.session_state.pop("auth_mix_usage", None)
 
 # -------------------- THEME --------------------
 # Người dùng có thể đổi bảng màu; toàn bộ đều là nền sáng, không dùng nền đen.
@@ -1102,6 +1249,14 @@ hr{{margin:.45rem 0!important}}
 .account-mini-value{{font-size:13.2px;color:#245B91;font-weight:800;white-space:normal;overflow-wrap:anywhere;line-height:1.25}}
 .account-expiry{{font-size:12.2px;color:#6E7E90;margin:4px 0 2px}}
 
+.upgrade-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:7px 0 10px}}
+.upgrade-card{{border:1px solid #CFE0F1;background:linear-gradient(180deg,#FFFFFF,#F5FAFF);border-radius:13px;padding:12px;text-align:center}}
+.upgrade-name{{font-size:13px;color:#5E748B;font-weight:750}}
+.upgrade-price{{font-size:25px;color:#176BCE;font-weight:900;line-height:1.15;margin:4px 0}}
+.upgrade-note{{font-size:12px;color:#718398;line-height:1.35}}
+.free-usage-bar{{font-size:12.2px;color:#536A82;margin-top:4px;text-align:center}}
+@media(max-width:700px){{.upgrade-grid{{grid-template-columns:1fr}}}}
+
 /* Đăng nhập / đăng ký */
 div[data-testid="stDialog"] [data-testid="stDialogContent"]{{
   border-radius:18px!important;border:1px solid #D7E6F5!important;box-shadow:0 22px 60px rgba(28,70,110,.18)!important;
@@ -1160,10 +1315,8 @@ with _head_left:
 
 _AUTH_LOGGED_IN = _auth_logged_in()
 _AUTH_SUBSCRIPTION = st.session_state.get("auth_subscription") or {"plan": "FREE", "status": "active"}
-_AUTH_CAN_USE = _auth_can_use_app()
-_AUTH_VIEW_REASON = ""
-if _AUTH_LOGGED_IN and not _AUTH_CAN_USE:
-    _, _AUTH_VIEW_REASON = _subscription_is_allowed(_AUTH_SUBSCRIPTION)
+_AUTH_USAGE = st.session_state.get("auth_mix_usage") or {"successful_mixes": 0}
+_AUTH_CAN_USE, _AUTH_VIEW_REASON = _auth_access_reason()
 
 with _head_right:
     if not _AUTH_LOGGED_IN:
@@ -1184,8 +1337,10 @@ with _head_right:
         _auth_email = str(_auth_user.get("email") or "")
         _auth_name = str(_auth_meta.get("full_name") or _auth_meta.get("name") or "").strip()
         _auth_display = _auth_name or (_auth_email.split("@")[0] if _auth_email else "Tài khoản")
-        _auth_plan = str(_AUTH_SUBSCRIPTION.get("plan") or "FREE").upper()
+        _auth_plan = _plan_label(_AUTH_SUBSCRIPTION)
+        _auth_plan_code = _plan_code(_AUTH_SUBSCRIPTION)
         _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
+        _free_remaining = _free_mix_remaining(_AUTH_USAGE)
         with st.container(key="account_controls"):
             if hasattr(st, "popover"):
                 with st.popover(f"👤 {_auth_display}", use_container_width=True):
@@ -1199,8 +1354,13 @@ with _head_right:
                         f'<div class="account-expiry">Hạn sử dụng: {html.escape(_format_account_date(_AUTH_SUBSCRIPTION.get("expires_at")))}</div>',
                         unsafe_allow_html=True,
                     )
+                    if _auth_plan_code == "FREE":
+                        st.caption(f"Lượt miễn phí: {_free_mix_used(_AUTH_USAGE)}/{FREE_MIX_LIMIT} đã dùng · còn {_free_remaining} lượt")
                     if _AUTH_VIEW_REASON:
                         st.warning(_AUTH_VIEW_REASON)
+                    if _auth_plan_code == "FREE":
+                        if st.button("💎 Nâng cấp gói", key="popover_upgrade", type="primary", use_container_width=True):
+                            _upgrade_dialog()
                     st.divider()
                     if st.button("↪ Đăng xuất", key="popover_logout", use_container_width=True):
                         _logout()
@@ -1212,19 +1372,25 @@ with _head_right:
                     if st.button("Đăng xuất", key="fallback_logout", use_container_width=True):
                         _logout()
                         st.rerun()
+        if _auth_plan_code == "FREE":
+            _under_text = f"gói free · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
+        else:
+            _under_text = f"gói {_auth_plan.lower()} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
         st.markdown(
-            f'<div class="auth-plan-under">gói {_auth_plan.lower()}</div>',
+            f'<div class="auth-plan-under">{html.escape(_under_text)}</div>',
             unsafe_allow_html=True,
         )
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")
-if not _AUTH_LOGGED_IN and _inline_auth in {"login", "signup"}:
+if _inline_auth in {"login", "signup", "upgrade"}:
     with st.container(border=True):
         if _inline_auth == "login":
             _login_form_body()
-        else:
+        elif _inline_auth == "signup":
             _signup_form_body()
+        else:
+            _upgrade_body()
         if st.button("Đóng", key="close_inline_auth"):
             st.session_state.pop("auth_inline_panel", None)
             st.rerun()
@@ -1234,7 +1400,7 @@ if _oauth_error:
     st.error(f"Đăng nhập Google chưa hoàn tất: {_oauth_error}")
 
 if st.session_state.pop("auth_just_logged_in", False) and _AUTH_LOGGED_IN:
-    _flash_plan = str(_AUTH_SUBSCRIPTION.get("plan") or "FREE").upper()
+    _flash_plan = _plan_label(_AUTH_SUBSCRIPTION)
     _flash_status, _ = _subscription_status(_AUTH_SUBSCRIPTION)
     if hasattr(st, "toast"):
         st.toast(f"Đăng nhập thành công • Gói {_flash_plan}", icon="✅")
@@ -1255,6 +1421,11 @@ elif not _AUTH_CAN_USE:
         f'<div class="view-only-banner">🔒 <b>Tài khoản đang ở chế độ xem.</b> {html.escape(_AUTH_VIEW_REASON or "Gói sử dụng chưa hoạt động.")}</div>',
         unsafe_allow_html=True,
     )
+    if _plan_code(_AUTH_SUBSCRIPTION) == "FREE" and _free_mix_remaining(_AUTH_USAGE) <= 0:
+        _up1, _up2, _up3 = st.columns([1, 1.4, 1])
+        with _up2:
+            if st.button("💎 Nâng cấp: 1 năm 50.000đ · 2 năm 100.000đ", type="primary", use_container_width=True, key="quota_upgrade"):
+                _upgrade_dialog()
 
 # Khóa tương tác trong toàn bộ workspace khi khách chưa có quyền sử dụng.
 if not _AUTH_CAN_USE:
@@ -2833,8 +3004,9 @@ def auto_download_zip(zip_bytes: bytes, filename: str) -> None:
 
 
 def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
-    if not _auth_can_use_app():
-        st.warning("Bạn đang ở chế độ xem. Hãy đăng nhập bằng tài khoản đang hoạt động để trộn và xuất đề.")
+    can_use, access_reason = _auth_access_reason()
+    if not can_use:
+        st.warning(access_reason or "Bạn đang ở chế độ xem. Hãy đăng nhập hoặc nâng cấp gói để tiếp tục.")
         return
     if not codes:
         st.error("Chưa có mã đề hợp lệ.")
@@ -2853,11 +3025,30 @@ def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
             standard_config=std_cfg,
             youngmix_config=ym_cfg,
         )
+
+        # Chỉ ghi nhận lượt sau khi bộ trộn đã tạo kết quả thành công. RPC ở Supabase
+        # kiểm tra hạn mức lần cuối theo kiểu nguyên tử, nên FREE không thể vượt quá 3 lượt.
+        usage_result = _record_successful_mix()
+        allowed_value = usage_result.get("allowed", False)
+        allowed = allowed_value if isinstance(allowed_value, bool) else str(allowed_value).lower() in {"true", "1", "t", "yes"}
+        if not allowed:
+            progress.empty()
+            st.session_state.pop("mix_result", None)
+            st.warning(str(usage_result.get("reason") or "Bạn đã dùng hết lượt trộn miễn phí. Hãy nâng cấp gói để tiếp tục."))
+            if _plan_code() == "FREE":
+                if st.button("💎 Xem gói nâng cấp", key=f"upgrade_after_limit_{int(time.time())}", type="primary"):
+                    _upgrade_dialog()
+            return
+
         progress.progress(100, text="Hoàn tất — đang tải ZIP...")
         st.session_state.mix_result = result
         zip_name = _safe_zip_name(engine.filename)
         auto_download_zip(result.zip_bytes, zip_name)
-        st.toast(f"Đã trộn xong. Đang tải {zip_name}", icon="✅")
+        if _plan_code() == "FREE":
+            remaining = _free_mix_remaining(st.session_state.get("auth_mix_usage") or {})
+            st.toast(f"Đã trộn xong. Tài khoản FREE còn {remaining}/{FREE_MIX_LIMIT} lượt.", icon="✅")
+        else:
+            st.toast(f"Đã trộn xong. Đang tải {zip_name}", icon="✅")
     except Exception as exc:
         st.error(f"Không thể trộn đề: {exc}")
         with st.expander("Chi tiết lỗi kỹ thuật"):

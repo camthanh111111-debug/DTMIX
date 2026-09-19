@@ -2382,6 +2382,6 @@ with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=Fal
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online 1.3 • Tối ưu màn hình máy tính ở 100% • Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
+    '<div class="footer">DTMIX Online• Tối ưu màn hình máy tính ở 100% • Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
     unsafe_allow_html=True,
 )

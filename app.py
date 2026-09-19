@@ -11,12 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -40,386 +35,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
-# ============================================================
-# AUTH — SUPABASE (đăng nhập bắt buộc)
-# ============================================================
-# Không lưu mật khẩu trong mã nguồn. DTMIX gọi Supabase Auth từ phía máy chủ.
-# Cấu hình các khóa trong Streamlit Secrets:
-#   SUPABASE_URL = "https://xxxx.supabase.co"
-#   SUPABASE_ANON_KEY = "..."
-# Tùy chọn cho giai đoạn thu phí sau này:
-#   DTMIX_ALLOW_SIGNUP = true
-#   DTMIX_ENFORCE_SUBSCRIPTION = false
-
-
-def _secret_value(name: str, default: str = "") -> str:
-    try:
-        value = st.secrets.get(name, default)
-    except Exception:
-        value = os.environ.get(name, default)
-    if value is None:
-        return default
-    return str(value).strip()
-
-
-def _secret_bool(name: str, default: bool = False) -> bool:
-    raw = _secret_value(name, "true" if default else "false").lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _supabase_config() -> tuple[str, str]:
-    return (
-        _secret_value("SUPABASE_URL").rstrip("/"),
-        _secret_value("SUPABASE_ANON_KEY"),
-    )
-
-
-class DTMIXAuthError(RuntimeError):
-    pass
-
-
-def _friendly_auth_error(message: str) -> str:
-    msg = (message or "").strip()
-    low = msg.lower()
-    mappings = [
-        ("invalid login credentials", "Email hoặc mật khẩu không đúng."),
-        ("email not confirmed", "Email chưa được xác minh. Hãy kiểm tra hộp thư rồi xác minh tài khoản."),
-        ("user already registered", "Email này đã được đăng ký."),
-        ("password should be at least", "Mật khẩu chưa đủ độ dài tối thiểu."),
-        ("signup is disabled", "Hệ thống hiện đang tắt đăng ký tài khoản mới."),
-        ("email rate limit exceeded", "Bạn đã gửi email quá nhiều lần. Vui lòng thử lại sau."),
-        ("over_email_send_rate_limit", "Bạn đã gửi email quá nhiều lần. Vui lòng thử lại sau."),
-    ]
-    for needle, vi in mappings:
-        if needle in low:
-            return vi
-    return msg or "Không thể xác thực tài khoản. Vui lòng thử lại."
-
-
-def _supabase_json(
-    path: str,
-    *,
-    method: str = "GET",
-    payload: dict | None = None,
-    access_token: str | None = None,
-    query: dict | None = None,
-    timeout: int = 20,
-):
-    base_url, anon_key = _supabase_config()
-    if not base_url or not anon_key:
-        raise DTMIXAuthError("DTMIX chưa được cấu hình Supabase.")
-
-    url = f"{base_url}{path}"
-    if query:
-        url += "?" + urllib.parse.urlencode(query, doseq=True)
-
-    headers = {
-        "apikey": anon_key,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-
-    data = None
-    if payload is not None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except Exception:
-                return {"raw": raw.decode("utf-8", errors="replace")}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            detail = json.loads(raw)
-        except Exception:
-            detail = {"message": raw}
-        message = (
-            detail.get("message")
-            or detail.get("msg")
-            or detail.get("error_description")
-            or detail.get("error")
-            or f"HTTP {exc.code}"
-        )
-        raise DTMIXAuthError(_friendly_auth_error(str(message))) from exc
-    except urllib.error.URLError as exc:
-        raise DTMIXAuthError("Không kết nối được máy chủ đăng nhập. Vui lòng thử lại.") from exc
-
-
-def _clear_auth_session() -> None:
-    for key in (
-        "auth_access_token",
-        "auth_refresh_token",
-        "auth_expires_at",
-        "auth_user",
-        "auth_subscription",
-    ):
-        st.session_state.pop(key, None)
-
-
-def _store_auth_session(data: dict) -> None:
-    access_token = data.get("access_token") or ""
-    refresh_token = data.get("refresh_token") or ""
-    user = data.get("user") or {}
-    expires_in = int(data.get("expires_in") or 3600)
-
-    if access_token:
-        st.session_state["auth_access_token"] = access_token
-    if refresh_token:
-        st.session_state["auth_refresh_token"] = refresh_token
-    st.session_state["auth_expires_at"] = int(time.time()) + max(60, expires_in)
-
-    if not user and access_token:
-        try:
-            user = _supabase_json("/auth/v1/user", access_token=access_token)
-        except Exception:
-            user = {}
-    st.session_state["auth_user"] = user
-
-
-def _login_with_password(email: str, password: str) -> None:
-    data = _supabase_json(
-        "/auth/v1/token",
-        method="POST",
-        query={"grant_type": "password"},
-        payload={"email": email.strip(), "password": password},
-    )
-    if not data.get("access_token"):
-        raise DTMIXAuthError("Đăng nhập không thành công.")
-    _store_auth_session(data)
-
-
-def _signup_with_password(full_name: str, email: str, password: str) -> dict:
-    return _supabase_json(
-        "/auth/v1/signup",
-        method="POST",
-        payload={
-            "email": email.strip(),
-            "password": password,
-            "data": {"full_name": full_name.strip()},
-        },
-    )
-
-
-def _refresh_auth_if_needed() -> None:
-    if not st.session_state.get("auth_access_token"):
-        return
-
-    expires_at = int(st.session_state.get("auth_expires_at") or 0)
-    if expires_at and time.time() < expires_at - 90:
-        return
-
-    refresh_token = st.session_state.get("auth_refresh_token")
-    if not refresh_token:
-        _clear_auth_session()
-        return
-
-    try:
-        data = _supabase_json(
-            "/auth/v1/token",
-            method="POST",
-            query={"grant_type": "refresh_token"},
-            payload={"refresh_token": refresh_token},
-        )
-        _store_auth_session(data)
-    except Exception:
-        _clear_auth_session()
-
-
-def _load_subscription() -> dict:
-    """Đọc gói hiện tại nếu đã tạo bảng subscriptions; chưa có bảng thì dùng FREE."""
-    user = st.session_state.get("auth_user") or {}
-    user_id = user.get("id")
-    token = st.session_state.get("auth_access_token")
-    fallback = {
-        "plan": "FREE",
-        "status": "active",
-        "expires_at": None,
-        "source": "fallback",
-    }
-    if not user_id or not token:
-        return fallback
-
-    try:
-        rows = _supabase_json(
-            "/rest/v1/subscriptions",
-            access_token=token,
-            query={
-                "user_id": f"eq.{user_id}",
-                "select": "plan,status,expires_at,updated_at",
-                "order": "updated_at.desc",
-                "limit": "1",
-            },
-        )
-        if isinstance(rows, list) and rows:
-            row = dict(rows[0])
-            row.setdefault("plan", "FREE")
-            row.setdefault("status", "active")
-            row["source"] = "database"
-            return row
-    except Exception:
-        # Bảng subscriptions chưa được tạo hoặc policy chưa cấu hình: không chặn
-        # đăng nhập ở giai đoạn đầu. Khi thu phí, bật DTMIX_ENFORCE_SUBSCRIPTION.
-        pass
-    return fallback
-
-
-def _subscription_is_allowed(subscription: dict) -> tuple[bool, str]:
-    plan = str(subscription.get("plan") or "FREE").upper()
-    status = str(subscription.get("status") or "active").lower()
-
-    if plan == "ADMIN":
-        return True, ""
-    if status not in {"active", "trial", "trialing"}:
-        return False, "Gói sử dụng hiện không hoạt động."
-
-    expires_at = subscription.get("expires_at")
-    if expires_at:
-        try:
-            dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if dt.astimezone(timezone.utc) <= datetime.now(timezone.utc):
-                return False, "Gói sử dụng đã hết hạn."
-        except Exception:
-            pass
-    return True, ""
-
-
-def _logout() -> None:
-    token = st.session_state.get("auth_access_token")
-    if token:
-        try:
-            _supabase_json("/auth/v1/logout", method="POST", access_token=token)
-        except Exception:
-            pass
-    _clear_auth_session()
-
-
-def _render_login_page() -> None:
-    st.markdown(
-        """
-        <style>
-        .block-container{max-width:920px!important;padding-top:2.0rem!important}
-        .dt-auth-hero{
-          background:linear-gradient(135deg,#EAF4FF,#DCEEFF);
-          border:1px solid #C9E0F6;border-radius:18px;padding:22px 26px;
-          box-shadow:0 14px 34px rgba(34,88,140,.10);text-align:center;margin-bottom:16px
-        }
-        .dt-auth-title{font-size:30px;font-weight:900;color:#0E5FA8;letter-spacing:-.4px}
-        .dt-auth-sub{font-size:15px;color:#58718D;margin-top:7px}
-        .dt-auth-card{
-          background:#fff;border:1px solid #DDE8F3;border-radius:16px;padding:12px 16px 6px;
-          box-shadow:0 8px 24px rgba(44,73,104,.06)
-        }
-        </style>
-        <div class="dt-auth-hero">
-          <div class="dt-auth-title">🧪 DTMIX Online</div>
-          <div class="dt-auth-sub">Đăng nhập để sử dụng công cụ trộn đề và quản lý quyền sử dụng.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    base_url, anon_key = _supabase_config()
-    if not base_url or not anon_key:
-        st.error("DTMIX chưa được cấu hình Supabase nên chưa thể đăng nhập.")
-        st.markdown("**Sau khi tạo dự án Supabase, thêm 2 khóa này vào Streamlit → Settings → Secrets:**")
-        st.code(
-            'SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"\n'
-            'SUPABASE_ANON_KEY = "YOUR_ANON_KEY"\n'
-            'DTMIX_ALLOW_SIGNUP = true\n'
-            'DTMIX_ENFORCE_SUBSCRIPTION = false',
-            language="toml",
-        )
-        st.stop()
-
-    allow_signup = _secret_bool("DTMIX_ALLOW_SIGNUP", True)
-    tab_login, tab_signup = st.tabs(["🔐 Đăng nhập", "📝 Đăng ký"])
-
-    with tab_login:
-        with st.form("dtmix_login_form", clear_on_submit=False):
-            email = st.text_input("Email", placeholder="tenban@example.com", key="auth_login_email")
-            password = st.text_input("Mật khẩu", type="password", key="auth_login_password")
-            submitted = st.form_submit_button("ĐĂNG NHẬP", type="primary", use_container_width=True)
-        if submitted:
-            if not email.strip() or not password:
-                st.error("Vui lòng nhập đầy đủ email và mật khẩu.")
-            else:
-                try:
-                    with st.spinner("Đang đăng nhập..."):
-                        _login_with_password(email, password)
-                    st.rerun()
-                except DTMIXAuthError as exc:
-                    st.error(str(exc))
-
-        st.caption("🔒 Mật khẩu không được lưu trong mã nguồn DTMIX; việc xác thực do Supabase Auth xử lý.")
-
-    with tab_signup:
-        if not allow_signup:
-            st.info("Đăng ký tài khoản mới hiện đang tạm khóa. Vui lòng liên hệ quản trị viên DTMIX.")
-        else:
-            with st.form("dtmix_signup_form", clear_on_submit=False):
-                full_name = st.text_input("Họ và tên", key="auth_signup_name")
-                email2 = st.text_input("Email đăng ký", key="auth_signup_email")
-                password2 = st.text_input("Mật khẩu", type="password", key="auth_signup_password")
-                password3 = st.text_input("Nhập lại mật khẩu", type="password", key="auth_signup_password2")
-                signup_submitted = st.form_submit_button("TẠO TÀI KHOẢN", use_container_width=True)
-
-            if signup_submitted:
-                if not full_name.strip() or not email2.strip() or not password2:
-                    st.error("Vui lòng nhập đầy đủ thông tin.")
-                elif len(password2) < 8:
-                    st.error("Mật khẩu nên có ít nhất 8 ký tự.")
-                elif password2 != password3:
-                    st.error("Hai lần nhập mật khẩu chưa khớp.")
-                else:
-                    try:
-                        with st.spinner("Đang tạo tài khoản..."):
-                            data = _signup_with_password(full_name, email2, password2)
-                        if data.get("access_token"):
-                            _store_auth_session(data)
-                            st.success("Tạo tài khoản thành công.")
-                            st.rerun()
-                        else:
-                            st.success("Đã tạo tài khoản. Hãy kiểm tra email để xác minh rồi quay lại đăng nhập.")
-                    except DTMIXAuthError as exc:
-                        st.error(str(exc))
-
-    st.stop()
-
-
-def _require_login() -> None:
-    _refresh_auth_if_needed()
-    if not st.session_state.get("auth_access_token") or not st.session_state.get("auth_user"):
-        _render_login_page()
-
-    subscription = _load_subscription()
-    st.session_state["auth_subscription"] = subscription
-
-    if _secret_bool("DTMIX_ENFORCE_SUBSCRIPTION", False):
-        allowed, reason = _subscription_is_allowed(subscription)
-        if not allowed:
-            user = st.session_state.get("auth_user") or {}
-            st.markdown("## 🔒 DTMIX Online")
-            st.warning(reason)
-            st.write(f"Tài khoản: **{user.get('email', '')}**")
-            st.info("Vui lòng gia hạn gói sử dụng để tiếp tục dùng DTMIX.")
-            if st.button("Đăng xuất"):
-                _logout()
-                st.rerun()
-            st.stop()
-
-
-_require_login()
 
 # -------------------- THEME --------------------
 # Người dùng có thể đổi bảng màu; toàn bộ đều là nền sáng, không dùng nền đen.
@@ -820,6 +435,30 @@ hr{{margin:.45rem 0!important}}
   font-weight:450!important;
   margin-left:8px!important;
 }}
+/* Thẻ đề đã tải lên: nền kem vàng nhạt để nổi bật, dễ nhận biết */
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"],
+.st-key-source_file_card{{
+  background:linear-gradient(135deg,#FFF9E8,#FFF1C7)!important;
+  border:1.5px solid #E9BD55!important;
+  border-radius:14px!important;
+  box-shadow:0 4px 12px rgba(166,116,20,.14)!important;
+}}
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"]{{
+  padding:7px 10px!important;
+}}
+.st-key-source_file_card .stButton>button{{
+  background:#FFFFFF!important;
+  border:1.5px solid #D99A38!important;
+  color:#9B5D00!important;
+  font-weight:850!important;
+  box-shadow:0 2px 7px rgba(155,93,0,.10)!important;
+}}
+.st-key-source_file_card .stButton>button:hover{{
+  background:#FFF4D6!important;
+  border-color:#C9851A!important;
+  color:#7A4800!important;
+}}
+
 .file-pill{{
   display:block!important;
   width:48%!important;
@@ -875,21 +514,6 @@ hr{{margin:.45rem 0!important}}
 """,
     unsafe_allow_html=True,
 )
-
-# Tài khoản đang đăng nhập
-_auth_user = st.session_state.get("auth_user") or {}
-_auth_subscription = st.session_state.get("auth_subscription") or {"plan": "FREE"}
-_auth_email = _auth_user.get("email") or "Tài khoản"
-_auth_name = ((_auth_user.get("user_metadata") or {}).get("full_name") or "").strip()
-_auth_plan = str(_auth_subscription.get("plan") or "FREE").upper()
-_acc_info, _acc_logout = st.columns([8.5, 1.5], gap="small", vertical_alignment="center")
-with _acc_info:
-    _who = f"{_auth_name} • {_auth_email}" if _auth_name else _auth_email
-    st.caption(f"👤 {_who}   •   Gói: {_auth_plan}")
-with _acc_logout:
-    if st.button("Đăng xuất", key="dtmix_logout", use_container_width=True):
-        _logout()
-        st.rerun()
 
 # ============================================================
 # STATE / HELPERS
@@ -2577,7 +2201,7 @@ with st.container(border=True):
             # Thẻ file sau khi tải lên: đặt giữa, rộng tương đương vùng Upload ban đầu.
             _left, file_card_col, _right = st.columns([1, 2, 1], gap="small")
             with file_card_col:
-                with st.container(border=True):
+                with st.container(border=True, key="source_file_card"):
                     info_col, remove_col = st.columns([3.8, 1.7], gap="small", vertical_alignment="center")
                     with info_col:
                         st.markdown(

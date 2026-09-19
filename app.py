@@ -57,6 +57,12 @@ FREE_MIX_LIMIT = 3
 PLAN_PRICES_VND = {"YEAR1": 50_000, "YEAR2": 100_000}
 PAID_PLANS = {"YEAR", "YEAR1", "YEAR2"}
 
+# VietQR / tài khoản nhận thanh toán. Các giá trị có thể đổi trong Streamlit Secrets
+# mà không cần sửa source code. Timo by Bản Việt có BIN VietQR 963388.
+PAYMENT_BANK_ID_DEFAULT = "963388"
+PAYMENT_BANK_LABEL_DEFAULT = "Timo by Bản Việt"
+
+
 
 def _secret_value(name: str, default: str = "") -> str:
     try:
@@ -362,6 +368,89 @@ def _request_upgrade(plan: str) -> dict:
         access_token=token,
     )
     return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
+def _load_pending_upgrade_request() -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return {}
+    try:
+        data = _supabase_json(
+            "/rest/v1/upgrade_requests",
+            method="GET",
+            access_token=token,
+            query={
+                "select": "id,plan,price_vnd,status,created_at",
+                "status": "eq.pending",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+        )
+        return data[0] if isinstance(data, list) and data else {}
+    except Exception:
+        return {}
+
+
+def _payment_settings() -> dict:
+    return {
+        "bank_id": _secret_value("DTMIX_BANK_ID", PAYMENT_BANK_ID_DEFAULT),
+        "bank_label": _secret_value("DTMIX_BANK_LABEL", PAYMENT_BANK_LABEL_DEFAULT),
+        "account_no": _secret_value("DTMIX_BANK_ACCOUNT", ""),
+        "account_name": _secret_value("DTMIX_BANK_ACCOUNT_NAME", ""),
+    }
+
+
+def _vietqr_url(*, amount: int, add_info: str) -> str:
+    cfg = _payment_settings()
+    if not cfg["account_no"] or not cfg["account_name"]:
+        return ""
+    params = urllib.parse.urlencode({
+        "amount": int(amount),
+        "addInfo": str(add_info)[:25],
+        "accountName": cfg["account_name"],
+    })
+    return (
+        f"https://img.vietqr.io/image/{urllib.parse.quote(cfg['bank_id'])}-"
+        f"{urllib.parse.quote(cfg['account_no'])}-compact2.png?{params}"
+    )
+
+
+def _render_payment_request(req: dict) -> None:
+    if not req:
+        return
+    request_id = int(req.get("request_id") or req.get("id") or 0)
+    plan = str(req.get("plan") or "").upper()
+    amount = int(req.get("price_vnd") or PLAN_PRICES_VND.get(plan, 0) or 0)
+    if not request_id or not amount:
+        return
+    cfg = _payment_settings()
+    transfer_note = f"DTMIX R{request_id}"
+    qr_url = _vietqr_url(amount=amount, add_info=transfer_note)
+    st.markdown(
+        '<div class="payment-title">Thanh toán bằng VietQR</div>'
+        '<div class="payment-sub">Quét mã bằng ứng dụng ngân hàng. Số tiền và nội dung chuyển khoản đã được điền sẵn.</div>',
+        unsafe_allow_html=True,
+    )
+    if not qr_url:
+        st.error("Chưa cấu hình tài khoản nhận thanh toán trong Streamlit Secrets.")
+        return
+    q1, q2 = st.columns([1.0, 1.15], gap="medium", vertical_alignment="center")
+    with q1:
+        st.image(qr_url, use_container_width=True)
+    with q2:
+        plan_label = "1 năm" if plan == "YEAR1" else "2 năm"
+        st.markdown(
+            f'<div class="payment-info">'
+            f'<div><span>Gói</span><b>{plan_label}</b></div>'
+            f'<div><span>Số tiền</span><b>{amount:,.0f}đ</b></div>'
+            f'<div><span>Ngân hàng</span><b>{html.escape(cfg["bank_label"])}</b></div>'
+            f'<div><span>Số tài khoản</span><b>{html.escape(cfg["account_no"])}</b></div>'
+            f'<div><span>Chủ tài khoản</span><b>{html.escape(cfg["account_name"])}</b></div>'
+            f'<div><span>Nội dung CK</span><b class="payment-code">{html.escape(transfer_note)}</b></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.info("Sau khi chuyển khoản, vui lòng giữ nguyên nội dung chuyển khoản. Gói sẽ được kích hoạt sau khi giao dịch được đối soát.")
 
 
 def _subscription_is_allowed(subscription: dict) -> tuple[bool, str]:
@@ -696,19 +785,22 @@ def _upgrade_body() -> None:
     )
     c1, c2 = st.columns(2, gap="small")
     with c1:
-        choose1 = st.button("Đăng ký gói 1 năm", type="primary", use_container_width=True, key="upgrade_year1")
+        choose1 = st.button("Chọn gói 1 năm", type="primary", use_container_width=True, key="upgrade_year1")
     with c2:
-        choose2 = st.button("Đăng ký gói 2 năm", use_container_width=True, key="upgrade_year2")
+        choose2 = st.button("Chọn gói 2 năm", use_container_width=True, key="upgrade_year2")
     chosen = "YEAR1" if choose1 else ("YEAR2" if choose2 else "")
     if chosen:
         try:
-            _request_upgrade(chosen)
-            st.success(
-                f"Đã ghi nhận yêu cầu gói {'1 năm' if chosen == 'YEAR1' else '2 năm'} "
-                f"({PLAN_PRICES_VND[chosen]:,}đ). Quản trị viên sẽ kích hoạt sau khi xác nhận thanh toán.".replace(",", ".")
-            )
+            req = _request_upgrade(chosen)
+            st.session_state["payment_request"] = req
         except DTMIXAuthError as exc:
             st.error(str(exc))
+
+    req = st.session_state.get("payment_request") or _load_pending_upgrade_request()
+    if req:
+        _render_payment_request(req)
+    else:
+        st.caption("Chọn một gói để tạo mã QR thanh toán. Mỗi yêu cầu có nội dung chuyển khoản riêng để đối soát.")
     st.caption("Gói FREE: 3 lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
 
 
@@ -1237,9 +1329,18 @@ hr{{margin:.45rem 0!important}}
 .st-key-guest_auth_controls [data-testid="stButton"] button{{
   min-height:42px!important;border-radius:10px!important;font-weight:800!important;
 }}
-.st-key-account_controls button{{
-  border-radius:10px!important;font-weight:800!important;min-height:43px!important;
+.st-key-account_controls{{
+  width:100%!important;max-width:285px!important;margin-left:auto!important;
+  background:#FFFFFF!important;border:1px solid #C9D8E7!important;border-radius:13px!important;
+  padding:2px 8px 5px!important;box-shadow:0 2px 8px rgba(41,73,104,.04)!important;
 }}
+.st-key-account_controls [data-testid="stVerticalBlock"]{{gap:.12rem!important}}
+.st-key-account_controls button{{
+  border:0!important;background:transparent!important;box-shadow:none!important;
+  border-radius:9px!important;font-weight:800!important;min-height:34px!important;padding:.22rem .45rem!important;
+}}
+.st-key-account_controls button:hover{{background:#F3F8FE!important}}
+.st-key-account_controls .auth-plan-under{{margin:0!important;padding:0 3px 1px!important;font-size:11.7px!important;line-height:1.15!important;white-space:normal!important}}
 .account-compact{{padding:1px 0 2px}}
 .account-compact-name{{font-size:17px;font-weight:800;color:#263A51}}
 .account-compact-email{{font-size:13px;color:#64809B;margin-top:2px;word-break:break-all}}
@@ -1255,6 +1356,16 @@ hr{{margin:.45rem 0!important}}
 .upgrade-price{{font-size:25px;color:#176BCE;font-weight:900;line-height:1.15;margin:4px 0}}
 .upgrade-note{{font-size:12px;color:#718398;line-height:1.35}}
 .free-usage-bar{{font-size:12.2px;color:#536A82;margin-top:4px;text-align:center}}
+.payment-title{{font-size:15.5px;font-weight:900;color:#174A7B;text-align:center;margin:12px 0 2px}}
+.payment-sub{{font-size:12.2px;color:#657D95;text-align:center;margin-bottom:8px}}
+.payment-info{{border:1px solid #D4E4F2;background:#F8FBFF;border-radius:12px;padding:8px 10px}}
+.payment-info>div{{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #E6EEF6;font-size:12.1px}}
+.payment-info>div:last-child{{border-bottom:0}}
+.payment-info span{{color:#718499;flex:0 0 42%}}
+.payment-info b{{color:#284A6B;text-align:right;overflow-wrap:anywhere}}
+.payment-info .payment-code{{color:#0B66C3;font-size:13px;letter-spacing:.2px}}
+@media(max-width:1150px){{.st-key-account_controls{{max-width:250px!important}}}}
+@media(max-width:850px){{.st-key-account_controls{{max-width:none!important}}}}
 @media(max-width:700px){{.upgrade-grid{{grid-template-columns:1fr}}}}
 
 /* Đăng nhập / đăng ký */
@@ -1296,7 +1407,7 @@ div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
 )
 
 # Header / tài khoản nằm ngoài workspace để vẫn hoạt động ở chế độ xem.
-_head_left, _head_right = st.columns([7.6, 2.4], gap="medium", vertical_alignment="top")
+_head_left, _head_right = st.columns([8.25, 1.75], gap="medium", vertical_alignment="top")
 with _head_left:
     st.markdown(
         """
@@ -1372,14 +1483,14 @@ with _head_right:
                     if st.button("Đăng xuất", key="fallback_logout", use_container_width=True):
                         _logout()
                         st.rerun()
-        if _auth_plan_code == "FREE":
-            _under_text = f"gói free · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
-        else:
-            _under_text = f"gói {_auth_plan.lower()} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
-        st.markdown(
-            f'<div class="auth-plan-under">{html.escape(_under_text)}</div>',
-            unsafe_allow_html=True,
-        )
+            if _auth_plan_code == "FREE":
+                _under_text = f"gói free · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
+            else:
+                _under_text = f"gói {_auth_plan.lower()} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
+            st.markdown(
+                f'<div class="auth-plan-under">{html.escape(_under_text)}</div>',
+                unsafe_allow_html=True,
+            )
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")

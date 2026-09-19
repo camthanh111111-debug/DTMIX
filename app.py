@@ -395,18 +395,22 @@ hr{{margin:.45rem 0!important}}
 [data-testid="stFileUploaderDropzone"] button{{
   width:100%!important;
   color:#0B66C3!important;
-  border:1.5px solid #86BCEB!important;
-  background:#FFFFFF!important;
-  border-radius:9px!important;
-  min-height:44px!important;
-  padding:.35rem .72rem!important;
-  font-weight:850!important;
-  box-shadow:0 2px 7px rgba(38,105,181,.10)!important;
+  font-size:20px!important;
+  font-weight:900!important;
+
+  background:linear-gradient(180deg,#F9FCFF,#EAF4FF)!important;
+  border:1.5px solid #7FB6E8!important;
+  border-radius:12px!important;
+  min-height:46px!important;
+  padding:.4rem .9rem!important;
+
+  box-shadow:0 4px 12px rgba(11,102,195,.18)!important;
   white-space:nowrap!important;
 
   display:flex!important;
   align-items:center!important;
   justify-content:center!important;
+  gap:10px!important;
 }}
 [data-testid="stFileUploaderDropzone"] button:hover{{
   color:#074F98!important;

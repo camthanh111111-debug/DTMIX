@@ -2143,18 +2143,29 @@ with st.container(border=True):
     raw = None
     with file_col:
         st.markdown('<div class="upload-zone-title">1. 📄 Tải đề cần trộn lên (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader(
-    "Đề gốc",
-    type=["docx"],
-    accept_multiple_files=False,
-    key="source_docx",
-    label_visibility="collapsed",
-)
+        uploaded = st.file_uploader(
+            "Đề gốc",
+            type=["docx"],
+            accept_multiple_files=False,
+            key="source_docx",
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            raw = uploaded.getvalue()
 
-    if uploaded:
-    raw = uploaded.getvalue()
-    st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
-    st.caption(f"{len(raw)/1024:.1f} KB")
+            # Khi đã có 1 đề: chỉ giữ hàng thông tin file + nút X của Streamlit.
+            # Ẩn vùng dấu + / thêm file phía dưới. Khi bấm X xóa đề cũ,
+            # Streamlit chạy lại và vùng tải file sẽ tự xuất hiện trở lại.
+            st.markdown(
+                """
+                <style>
+                [data-testid="stFileUploaderDropzone"] {
+                    display:none !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)

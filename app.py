@@ -391,6 +391,88 @@ def _load_pending_upgrade_request() -> dict:
         return {}
 
 
+def _is_admin() -> bool:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return False
+    try:
+        data = _supabase_json(
+            "/rest/v1/rpc/dtmix_is_admin",
+            method="POST",
+            payload={},
+            access_token=token,
+        )
+        if isinstance(data, bool):
+            return data
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, bool):
+                return first
+            if isinstance(first, dict):
+                return bool(next(iter(first.values()), False))
+        if isinstance(data, dict):
+            return bool(next(iter(data.values()), False))
+    except Exception:
+        return False
+    return False
+
+
+def _admin_payment_requests() -> list[dict]:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return []
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_admin_payment_requests",
+        method="POST",
+        payload={},
+        access_token=token,
+    )
+    return [dict(x) for x in data] if isinstance(data, list) else []
+
+
+def _admin_approve_upgrade(request_id: int) -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Bạn chưa đăng nhập.")
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_admin_approve_upgrade",
+        method="POST",
+        payload={"p_request_id": int(request_id)},
+        access_token=token,
+    )
+    return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
+def _admin_reject_upgrade(request_id: int) -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Bạn chưa đăng nhập.")
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_admin_reject_upgrade",
+        method="POST",
+        payload={"p_request_id": int(request_id)},
+        access_token=token,
+    )
+    return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
+def _format_money_vnd(value) -> str:
+    try:
+        return f"{int(value):,}".replace(",", ".") + "đ"
+    except Exception:
+        return str(value or "")
+
+
+def _format_dt_short(value) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
 def _payment_settings() -> dict:
     return {
         "bank_id": _secret_value("DTMIX_BANK_ID", PAYMENT_BANK_ID_DEFAULT),
@@ -808,6 +890,89 @@ def _upgrade_body() -> None:
     st.caption("Gói FREE: 3 lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
 
 
+def _admin_payments_body() -> None:
+    if not _is_admin():
+        st.error("Tài khoản này không có quyền quản trị DTMIX.")
+        return
+
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">🛡️</div>'
+        '<div><div class="auth-dialog-title">Quản trị thanh toán</div>'
+        '<div class="auth-dialog-sub">Xác nhận đã nhận tiền để DTMIX tự kích hoạt hoặc gia hạn gói.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    st.info("Chỉ bấm **Đã nhận tiền – Kích hoạt** sau khi bạn kiểm tra đúng số tiền và đúng nội dung chuyển khoản trong tài khoản ngân hàng.")
+
+    try:
+        rows = _admin_payment_requests()
+    except DTMIXAuthError as exc:
+        st.error(str(exc))
+        return
+
+    pending = [r for r in rows if str(r.get("request_status") or "").lower() == "pending"]
+    history = [r for r in rows if str(r.get("request_status") or "").lower() != "pending"]
+
+    top1, top2 = st.columns([3, 1], gap="small")
+    with top1:
+        st.markdown(f"**Đang chờ xác nhận: {len(pending)} yêu cầu**")
+    with top2:
+        if st.button("↻ Làm mới", key="admin_pay_refresh", use_container_width=True):
+            st.rerun()
+
+    if not pending:
+        st.success("Hiện không có yêu cầu thanh toán nào đang chờ xác nhận.")
+    else:
+        for r in pending:
+            rid = int(r.get("request_id") or 0)
+            plan = str(r.get("requested_plan") or "")
+            plan_label = "1 năm" if plan == "YEAR1" else ("2 năm" if plan == "YEAR2" else plan)
+            email = str(r.get("customer_email") or "")
+            amount = _format_money_vnd(r.get("price_vnd"))
+            note = str(r.get("transfer_note") or f"DTMIX R{rid}")
+            created = _format_dt_short(r.get("created_at"))
+            with st.container(border=True):
+                st.markdown(
+                    f"**#{rid} · {html.escape(email)}**  \n"
+                    f"Gói: **{html.escape(plan_label)}** · Số tiền: **{html.escape(amount)}**  \n"
+                    f"Nội dung chuyển khoản: **`{html.escape(note)}`** · Tạo lúc: {html.escape(created)}"
+                )
+                c_ok, c_no = st.columns([2.2, 1], gap="small")
+                with c_ok:
+                    if st.button(
+                        f"✅ Đã nhận {amount} – Kích hoạt",
+                        key=f"admin_approve_{rid}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        try:
+                            result = _admin_approve_upgrade(rid)
+                            expires = _format_account_date(result.get("new_expires_at"))
+                            st.success(f"Đã kích hoạt {plan_label} cho {email}. Hạn mới: {expires}.")
+                            st.rerun()
+                        except DTMIXAuthError as exc:
+                            st.error(str(exc))
+                with c_no:
+                    if st.button("Từ chối", key=f"admin_reject_{rid}", use_container_width=True):
+                        try:
+                            _admin_reject_upgrade(rid)
+                            st.warning(f"Đã từ chối yêu cầu #{rid}.")
+                            st.rerun()
+                        except DTMIXAuthError as exc:
+                            st.error(str(exc))
+
+    if history:
+        with st.expander("Lịch sử xử lý gần đây"):
+            for r in history[:20]:
+                status = str(r.get("request_status") or "")
+                status_label = {"approved": "Đã kích hoạt", "rejected": "Đã từ chối", "cancelled": "Đã hủy"}.get(status, status)
+                plan = str(r.get("requested_plan") or "")
+                plan_label = "1 năm" if plan == "YEAR1" else ("2 năm" if plan == "YEAR2" else plan)
+                st.caption(
+                    f"#{r.get('request_id')} · {r.get('customer_email')} · {plan_label} · "
+                    f"{_format_money_vnd(r.get('price_vnd'))} · {status_label} · {_format_dt_short(r.get('processed_at') or r.get('created_at'))}"
+                )
+
+
 # Streamlit Community Cloud hiện hỗ trợ st.dialog. Có fallback để file vẫn chạy
 # nếu sau này app dùng một bản Streamlit cũ hơn.
 if hasattr(st, "dialog"):
@@ -822,6 +987,10 @@ if hasattr(st, "dialog"):
     @st.dialog("Nâng cấp DTMIX", width="small")
     def _upgrade_dialog():
         _upgrade_body()
+
+    @st.dialog("Quản trị thanh toán", width="large")
+    def _admin_payments_dialog():
+        _admin_payments_body()
 else:
     def _login_dialog():
         st.session_state["auth_inline_panel"] = "login"
@@ -833,6 +1002,10 @@ else:
 
     def _upgrade_dialog():
         st.session_state["auth_inline_panel"] = "upgrade"
+        st.rerun()
+
+    def _admin_payments_dialog():
+        st.session_state["auth_inline_panel"] = "admin_payments"
         st.rerun()
 
 
@@ -1486,6 +1659,9 @@ with _head_right:
                     if _auth_plan_code == "FREE":
                         if st.button("💎 Nâng cấp gói", key="popover_upgrade", type="primary", use_container_width=True):
                             _upgrade_dialog()
+                    if _is_admin():
+                        if st.button("🛡️ Quản trị thanh toán", key="popover_admin_payments", use_container_width=True):
+                            _admin_payments_dialog()
                     st.divider()
                     if st.button("↪ Đăng xuất", key="popover_logout", use_container_width=True):
                         _logout()
@@ -1500,14 +1676,16 @@ with _head_right:
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")
-if _inline_auth in {"login", "signup", "upgrade"}:
+if _inline_auth in {"login", "signup", "upgrade", "admin_payments"}:
     with st.container(border=True):
         if _inline_auth == "login":
             _login_form_body()
         elif _inline_auth == "signup":
             _signup_form_body()
-        else:
+        elif _inline_auth == "upgrade":
             _upgrade_body()
+        else:
+            _admin_payments_body()
         if st.button("Đóng", key="close_inline_auth"):
             st.session_state.pop("auth_inline_panel", None)
             st.rerun()

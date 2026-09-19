@@ -447,10 +447,55 @@ def _render_google_login_button() -> None:
     oauth_url = _google_oauth_url()
     st.markdown('<div class="auth-or"><span>hoặc</span></div>', unsafe_allow_html=True)
     if oauth_url:
-        st.markdown(
-            f'<a class="google-auth-button" href="{html.escape(oauth_url, quote=True)}" target="_top">'
-            '<span class="google-g">G</span><span>Đăng nhập bằng Google</span></a>',
-            unsafe_allow_html=True,
+        # DTMIX đang chạy bên trong iframe của GitHub Pages. Điều hướng OAuth bằng
+        # một thẻ <a target="_top"> có thể bị trình duyệt chặn trong một số trường hợp.
+        # Component nhỏ dưới đây gửi một postMessage lên trang dtmix.a1dbm.io.vn;
+        # index.html sẽ nhận thông điệp và điều hướng cửa sổ trên cùng sang Supabase.
+        js_oauth_url = json.dumps(oauth_url)
+        components.html(
+            f"""
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{{margin:0;padding:0;background:transparent;font-family:Inter,"Segoe UI",Arial,sans-serif}}
+  #google-login{{
+    width:100%;height:43px;border:1px solid #C9D8E7;border-radius:10px;background:#fff;
+    color:#23384E;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;
+    justify-content:center;gap:9px;box-shadow:0 2px 7px rgba(50,80,110,.05);
+  }}
+  #google-login:hover{{background:#F7FAFD;border-color:#9FBFD9}}
+  .g{{font-size:18px;font-weight:900;color:#4285F4}}
+</style>
+</head>
+<body>
+<button id="google-login" type="button"><span class="g">G</span><span>Đăng nhập bằng Google</span></button>
+<script>
+(() => {{
+  const oauthUrl = {js_oauth_url};
+  const btn = document.getElementById('google-login');
+  btn.addEventListener('click', () => {{
+    // Cách chính: báo cho trang GitHub Pages ở cửa sổ trên cùng điều hướng OAuth.
+    try {{
+      window.top.postMessage({{type:'DTMIX_OAUTH_START', url:oauthUrl}}, '*');
+    }} catch (e) {{}}
+
+    // Fallback: nếu trang đang mở trực tiếp trên Streamlit hoặc trình duyệt không relay message,
+    // thử điều hướng top ngay trong chính thao tác click của người dùng.
+    try {{
+      window.open(oauthUrl, '_top');
+    }} catch (e) {{
+      window.open(oauthUrl, '_blank', 'noopener,noreferrer');
+    }}
+  }});
+}})();
+</script>
+</body>
+</html>
+""",
+            height=48,
+            scrolling=False,
         )
     else:
         st.button("G  Đăng nhập bằng Google", disabled=True, use_container_width=True, key=f"google_disabled_{secrets.token_hex(4)}")

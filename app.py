@@ -2143,21 +2143,18 @@ with st.container(border=True):
     raw = None
     with file_col:
         st.markdown('<div class="upload-zone-title">1. 📄 Tải đề cần trộn lên (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
-        if uploaded:
-    raw = uploaded.getvalue()
+    uploaded = st.file_uploader(
+    "Đề gốc",
+    type=["docx"],
+    accept_multiple_files=False,
+    key="source_docx",
+    label_visibility="collapsed",
+)
 
-    # Khi đã có file: ẩn vùng dấu + / thêm file bên dưới.
-    # Muốn đổi đề thì bấm nút X ở file hiện tại, vùng tải file sẽ xuất hiện lại.
-    st.markdown(
-        """
-        <style>
-        [data-testid="stFileUploaderDropzone"] {
-            display:none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    if uploaded:
+    raw = uploaded.getvalue()
+    st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
+    st.caption(f"{len(raw)/1024:.1f} KB")
 
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)

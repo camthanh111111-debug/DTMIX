@@ -895,24 +895,24 @@ hr{{margin:.45rem 0!important}}
 }}
 
 /* Thanh tài khoản */
-.auth-status-pill{
+.auth-status-pill{{
   border-radius:999px;padding:5px 9px;text-align:center;font-size:12.8px;font-weight:850;
   border:1px solid #CFE0F1;background:#F7FBFF;color:#47627E;margin:0 0 6px;
-}
-.auth-status-pill.good{background:#EAF7F1;border-color:#BFE5D6;color:#116B50}
-.auth-status-pill.warn{background:#FFF6E7;border-color:#EED9AE;color:#955B00}
-.auth-status-pill.bad{background:#FFF0F2;border-color:#EFC5CB;color:#A53240}
-.auth-status-pill.guest{background:#F5F7FA;border-color:#DCE3EA;color:#66778A}
-.view-only-banner{
+}}
+.auth-status-pill.good{{background:#EAF7F1;border-color:#BFE5D6;color:#116B50}}
+.auth-status-pill.warn{{background:#FFF6E7;border-color:#EED9AE;color:#955B00}}
+.auth-status-pill.bad{{background:#FFF0F2;border-color:#EFC5CB;color:#A53240}}
+.auth-status-pill.guest{{background:#F5F7FA;border-color:#DCE3EA;color:#66778A}}
+.view-only-banner{{
   margin:2px 0 8px;padding:7px 11px;border-radius:10px;background:#F8FBFF;
   border:1px solid #D8E7F5;color:#516A84;font-size:13.6px;text-align:center;font-weight:650;
-}
-.st-key-guest_auth_controls [data-testid="stButton"] button{
+}}
+.st-key-guest_auth_controls [data-testid="stButton"] button{{
   min-height:42px!important;border-radius:10px!important;font-weight:800!important;
-}
-.st-key-account_controls button{
+}}
+.st-key-account_controls button{{
   border-radius:10px!important;font-weight:800!important;
-}
+}}
 </style>
 """,
     unsafe_allow_html=True,

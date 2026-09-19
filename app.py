@@ -2091,14 +2091,12 @@ with st.container(border=True):
             key="source_docx",
             label_visibility="collapsed",
         )
-        if uploaded:
+    if uploaded:
     raw = uploaded.getvalue()
-    # Tính dung lượng trước để đưa vào chuỗi
     size_kb = len(raw) / 1024
-    
-    # Sửa dòng này: Gộp cả tên file và dung lượng vào chung một câu lệnh st.markdown
     st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span> <span style="color: gray; font-size: 0.85em;">({size_kb:.1f} KB)</span>', unsafe_allow_html=True)
-    
+
+
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
         mode = st.radio(

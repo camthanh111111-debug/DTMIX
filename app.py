@@ -2092,10 +2092,13 @@ with st.container(border=True):
             label_visibility="collapsed",
         )
         if uploaded:
-            raw = uploaded.getvalue()
-            st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
-            st.caption(f"{len(raw)/1024:.1f} KB")
-
+    raw = uploaded.getvalue()
+    # Tính dung lượng trước để đưa vào chuỗi
+    size_kb = len(raw) / 1024
+    
+    # Sửa dòng này: Gộp cả tên file và dung lượng vào chung một câu lệnh st.markdown
+    st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span> <span style="color: gray; font-size: 0.85em;">({size_kb:.1f} KB)</span>', unsafe_allow_html=True)
+    
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
         mode = st.radio(

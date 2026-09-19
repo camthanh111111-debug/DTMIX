@@ -231,6 +231,59 @@ def _signup_with_password(full_name: str, email: str, password: str) -> dict:
     )
 
 
+def _request_password_recovery(email: str) -> None:
+    """Gửi email khôi phục mật khẩu bằng Supabase Auth + PKCE.
+
+    Verifier được suy ra từ recovery_state bằng DTMIX_OAUTH_STATE_SECRET nên
+    không phải lưu verifier vào session; phù hợp với GitHub Pages + iframe.
+    """
+    base_url, _ = _supabase_config()
+    secret = _oauth_state_secret()
+    if not base_url or not secret:
+        raise DTMIXAuthError(
+            "Thiếu cấu hình Supabase hoặc DTMIX_OAUTH_STATE_SECRET nên chưa thể gửi email khôi phục."
+        )
+    email = (email or "").strip()
+    if not email or "@" not in email:
+        raise DTMIXAuthError("Vui lòng nhập email hợp lệ.")
+
+    state = secrets.token_urlsafe(24)
+    verifier = _b64url(
+        hmac.new(secret.encode("utf-8"), ("recovery:" + state).encode("utf-8"), hashlib.sha256).digest()
+    )
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    redirect_to = (
+        _oauth_public_url()
+        + "?recovery=1&recovery_state="
+        + urllib.parse.quote(state, safe="")
+    )
+    _supabase_json(
+        "/auth/v1/recover",
+        method="POST",
+        query={"redirect_to": redirect_to},
+        payload={
+            "email": email,
+            "code_challenge": challenge,
+            "code_challenge_method": "s256",
+        },
+    )
+
+
+def _update_password(new_password: str) -> None:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Phiên khôi phục mật khẩu không còn hiệu lực. Hãy yêu cầu email mới.")
+    data = _supabase_json(
+        "/auth/v1/user",
+        method="PUT",
+        payload={"password": new_password},
+        access_token=token,
+    )
+    if not isinstance(data, dict) or not data.get("id"):
+        raise DTMIXAuthError("Không thể cập nhật mật khẩu. Vui lòng thử lại.")
+    st.session_state["auth_user"] = data
+
+
 def _refresh_auth_if_needed() -> None:
     if not st.session_state.get("auth_access_token"):
         return
@@ -665,11 +718,59 @@ def _qp(name: str) -> str:
 
 
 def _remove_oauth_query_params() -> None:
-    for key in ("code", "oauth_state", "error", "error_description"):
+    for key in ("code", "oauth_state", "recovery", "recovery_state", "error", "error_description"):
         try:
             del st.query_params[key]
         except Exception:
             pass
+
+
+def _handle_password_recovery_callback() -> None:
+    """Hoàn tất PKCE sau khi người dùng bấm link khôi phục trong email."""
+    code = _qp("code")
+    state = _qp("recovery_state")
+    recovery = _qp("recovery")
+    error = _qp("error")
+    error_description = _qp("error_description")
+
+    if not state and recovery != "1":
+        return
+
+    if error:
+        st.session_state["auth_recovery_error"] = error_description or error
+        _remove_oauth_query_params()
+        st.rerun()
+
+    if not code or not state:
+        return
+
+    secret = _oauth_state_secret()
+    if not secret:
+        st.session_state["auth_recovery_error"] = (
+            "Thiếu DTMIX_OAUTH_STATE_SECRET nên chưa thể hoàn tất khôi phục mật khẩu."
+        )
+        _remove_oauth_query_params()
+        st.rerun()
+
+    verifier = _b64url(
+        hmac.new(secret.encode("utf-8"), ("recovery:" + state).encode("utf-8"), hashlib.sha256).digest()
+    )
+    try:
+        data = _supabase_json(
+            "/auth/v1/token",
+            method="POST",
+            query={"grant_type": "pkce"},
+            payload={"auth_code": code, "code_verifier": verifier},
+        )
+        if not data.get("access_token"):
+            raise DTMIXAuthError("Liên kết khôi phục không trả về phiên hợp lệ.")
+        _store_auth_session(data)
+        st.session_state["auth_password_recovery"] = True
+    except DTMIXAuthError as exc:
+        st.session_state["auth_recovery_error"] = str(exc)
+    finally:
+        _remove_oauth_query_params()
+    st.rerun()
 
 
 def _handle_google_oauth_callback() -> None:
@@ -803,8 +904,65 @@ def _login_form_body() -> None:
                 st.rerun()
             except DTMIXAuthError as exc:
                 st.error(str(exc))
+    if st.button("Quên mật khẩu?", key="auth_open_forgot_password", use_container_width=True):
+        st.session_state["auth_show_forgot_password"] = True
+        st.rerun()
     _render_google_login_button()
     st.markdown('<div class="auth-security-note">🔒 Tài khoản được xác thực an toàn bởi Supabase Auth.</div>', unsafe_allow_html=True)
+
+
+def _forgot_password_body() -> None:
+    if not _auth_config_ready():
+        _render_auth_config_error()
+        return
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">🔑</div>'
+        '<div><div class="auth-dialog-title">Khôi phục mật khẩu</div>'
+        '<div class="auth-dialog-sub">Nhập email đã đăng ký để nhận liên kết đặt lại mật khẩu.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("dtmix_forgot_password_form", clear_on_submit=False):
+        email = st.text_input("Email", placeholder="tenban@example.com", key="auth_forgot_email")
+        submitted = st.form_submit_button("Gửi liên kết khôi phục", type="primary", use_container_width=True)
+    if submitted:
+        try:
+            with st.spinner("Đang gửi email khôi phục..."):
+                _request_password_recovery(email)
+            # Không tiết lộ email có tồn tại hay không.
+            st.success("Nếu email này có tài khoản DTMIX, bạn sẽ nhận được thư đặt lại mật khẩu. Hãy kiểm tra cả thư rác.")
+        except DTMIXAuthError as exc:
+            st.error(str(exc))
+    st.caption("Liên kết khôi phục có thời hạn. Nếu chưa thấy thư, chờ khoảng 1 phút rồi thử lại.")
+
+
+def _reset_password_body() -> None:
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">🔐</div>'
+        '<div><div class="auth-dialog-title">Đặt mật khẩu mới</div>'
+        '<div class="auth-dialog-sub">Tạo mật khẩu mới cho tài khoản DTMIX của bạn.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    if not _auth_logged_in():
+        st.error("Phiên khôi phục đã hết hạn. Hãy yêu cầu liên kết khôi phục mới.")
+        return
+    with st.form("dtmix_reset_password_form", clear_on_submit=False):
+        p1 = st.text_input("Mật khẩu mới", type="password", key="auth_reset_password")
+        p2 = st.text_input("Nhập lại mật khẩu mới", type="password", key="auth_reset_password2")
+        submitted = st.form_submit_button("Cập nhật mật khẩu", type="primary", use_container_width=True)
+    if submitted:
+        if len(p1) < 8:
+            st.error("Mật khẩu cần ít nhất 8 ký tự.")
+        elif p1 != p2:
+            st.error("Hai lần nhập mật khẩu chưa khớp.")
+        else:
+            try:
+                with st.spinner("Đang cập nhật mật khẩu..."):
+                    _update_password(p1)
+                st.session_state.pop("auth_password_recovery", None)
+                st.session_state["auth_password_changed"] = True
+                st.rerun()
+            except DTMIXAuthError as exc:
+                st.error(str(exc))
 
 
 def _signup_form_body() -> None:
@@ -984,6 +1142,14 @@ if hasattr(st, "dialog"):
     def _signup_dialog():
         _signup_form_body()
 
+    @st.dialog("Quên mật khẩu", width="small")
+    def _forgot_password_dialog():
+        _forgot_password_body()
+
+    @st.dialog("Đặt mật khẩu mới", width="small")
+    def _reset_password_dialog():
+        _reset_password_body()
+
     @st.dialog("Nâng cấp DTMIX", width="small")
     def _upgrade_dialog():
         _upgrade_body()
@@ -1000,6 +1166,14 @@ else:
         st.session_state["auth_inline_panel"] = "signup"
         st.rerun()
 
+    def _forgot_password_dialog():
+        st.session_state["auth_inline_panel"] = "forgot"
+        st.rerun()
+
+    def _reset_password_dialog():
+        st.session_state["auth_inline_panel"] = "reset"
+        st.rerun()
+
     def _upgrade_dialog():
         st.session_state["auth_inline_panel"] = "upgrade"
         st.rerun()
@@ -1009,8 +1183,15 @@ else:
         st.rerun()
 
 
+_handle_password_recovery_callback()
 _handle_google_oauth_callback()
 
+# Chuyển từ hộp đăng nhập sang hộp quên mật khẩu trên một full rerun, tránh
+# việc gọi hai st.dialog trong cùng một lượt chạy.
+if st.session_state.pop("auth_show_forgot_password", False):
+    _forgot_password_dialog()
+if st.session_state.get("auth_password_recovery"):
+    _reset_password_dialog()
 
 _refresh_auth_if_needed()
 if _auth_logged_in():
@@ -1632,6 +1813,7 @@ with _head_right:
         _auth_plan = _plan_label(_AUTH_SUBSCRIPTION)
         _auth_plan_code = _plan_code(_AUTH_SUBSCRIPTION)
         _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
+        _auth_is_admin = _is_admin()
         _free_remaining = _free_mix_remaining(_AUTH_USAGE)
         if _auth_plan_code == "FREE":
             _account_meta = f"Gói FREE · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
@@ -1659,7 +1841,8 @@ with _head_right:
                     if _auth_plan_code == "FREE":
                         if st.button("💎 Nâng cấp gói", key="popover_upgrade", type="primary", use_container_width=True):
                             _upgrade_dialog()
-                    if _is_admin():
+                    if _auth_is_admin:
+                        st.success("🛡️ Quyền quản trị DTMIX")
                         if st.button("🛡️ Quản trị thanh toán", key="popover_admin_payments", use_container_width=True):
                             _admin_payments_dialog()
                     st.divider()
@@ -1676,12 +1859,16 @@ with _head_right:
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")
-if _inline_auth in {"login", "signup", "upgrade", "admin_payments"}:
+if _inline_auth in {"login", "signup", "forgot", "reset", "upgrade", "admin_payments"}:
     with st.container(border=True):
         if _inline_auth == "login":
             _login_form_body()
         elif _inline_auth == "signup":
             _signup_form_body()
+        elif _inline_auth == "forgot":
+            _forgot_password_body()
+        elif _inline_auth == "reset":
+            _reset_password_body()
         elif _inline_auth == "upgrade":
             _upgrade_body()
         else:
@@ -1693,6 +1880,11 @@ if _inline_auth in {"login", "signup", "upgrade", "admin_payments"}:
 _oauth_error = st.session_state.pop("auth_oauth_error", "")
 if _oauth_error:
     st.error(f"Đăng nhập Google chưa hoàn tất: {_oauth_error}")
+_recovery_error = st.session_state.pop("auth_recovery_error", "")
+if _recovery_error:
+    st.error(f"Khôi phục mật khẩu chưa hoàn tất: {_recovery_error}")
+if st.session_state.pop("auth_password_changed", False):
+    st.success("Mật khẩu đã được cập nhật thành công.")
 
 if st.session_state.pop("auth_just_logged_in", False) and _AUTH_LOGGED_IN:
     _flash_plan = _plan_label(_AUTH_SUBSCRIPTION)

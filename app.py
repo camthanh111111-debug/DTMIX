@@ -381,6 +381,7 @@ hr{{margin:.45rem 0!important}}
 [data-testid="stFileUploaderDropzone"] section{{
   padding:0!important;
   min-height:44px!important;
+  width:100%!important;
   display:flex!important;
   align-items:center!important;
   justify-content:center!important;
@@ -392,16 +393,20 @@ hr{{margin:.45rem 0!important}}
 }}
 /* Tô xanh chữ Upload và biểu tượng mũi tên tải lên */
 [data-testid="stFileUploaderDropzone"] button{{
-  color:#005BAA!important;
-  font-size:25px!important;
-  border:2px solid #86BCEB!important;
+  width:100%!important;
+  color:#0B66C3!important;
+  border:1.5px solid #86BCEB!important;
   background:#FFFFFF!important;
   border-radius:9px!important;
-  min-height:42px!important;
+  min-height:44px!important;
   padding:.35rem .72rem!important;
   font-weight:850!important;
   box-shadow:0 2px 7px rgba(38,105,181,.10)!important;
   white-space:nowrap!important;
+
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
 }}
 [data-testid="stFileUploaderDropzone"] button:hover{{
   color:#074F98!important;

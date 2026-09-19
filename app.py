@@ -2207,7 +2207,7 @@ with st.container(border=True):
         st.caption("<g1>: đảo câu • <g2>: Đảo phương án • <g3>: cả hai")
 
     with code_col:
-        st.markdown('<div class="tool-card-title">3. 🏷️ Mã đề / số lượng</div>', unsafe_allow_html=True)
+        st.markdown('<div class="tool-card-title">3. 🏷️ Số Lượng đề / Kiểu mã đề</div>', unsafe_allow_html=True)
         top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
 
     # Xác định engine hiện tại có đúng file/chế độ không

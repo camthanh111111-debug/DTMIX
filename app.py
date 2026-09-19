@@ -2142,7 +2142,7 @@ with st.container(border=True):
     current_sig = None
     raw = None
     with file_col:
-        st.markdown('<div class="upload-zone-title">1. 📄 ĐỀ GỐC (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
+        st.markdown('<div class="upload-zone-title">1. 📄 Tải đề cần trộn lên (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
             "Đề gốc",
             type=["docx"],

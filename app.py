@@ -18,7 +18,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from docx.oxml.ns import qn
 from lxml import etree
-
+trô
 try:
     import fitz  # PyMuPDF - dùng để dựng trang PDF thành ảnh preview
 except Exception:
@@ -30,7 +30,7 @@ from engine import DTMIXWebEngine
 # DTMIX ONLINE 1.3 — ONE PAGE WORKSPACE
 # ============================================================
 st.set_page_config(
-    page_title="DTMIX Online 1.3",
+    page_title="DTMIX Online",
     page_icon="🧪",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -424,7 +424,7 @@ hr{{margin:.45rem 0!important}}
    <div class="hero-icon">🧪</div>
    <div>
      <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700">V1.3</span></div>
-     <div class="hero-sub">Trộn đề Word trực tuyến • rà soát đáp án • YoungMix g1/g2/g3 • xem trước giống Word</div>
+     <div class="hero-sub">Trộn đề trực tuyến • rà soát đáp án• xem trước đề gốc xuất ra</div>
    </div>
  </div>
 </div>

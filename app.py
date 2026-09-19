@@ -392,11 +392,12 @@ hr{{margin:.45rem 0!important}}
 }}
 /* Tô xanh chữ Upload và biểu tượng mũi tên tải lên */
 [data-testid="stFileUploaderDropzone"] button{{
-  color:#0B66C3!important;
+  color:#005BAA!important;
+  font-size:20px!important;
   border:1.5px solid #86BCEB!important;
   background:#FFFFFF!important;
   border-radius:9px!important;
-  min-height:38px!important;
+  min-height:42px!important;
   padding:.35rem .72rem!important;
   font-weight:850!important;
   box-shadow:0 2px 7px rgba(38,105,181,.10)!important;
@@ -417,7 +418,7 @@ hr{{margin:.45rem 0!important}}
   content:"  • 100MB per file • docx";
   color:#667D94!important;
   font-size:12.6px!important;
-  font-weight:350!important;
+  font-weight:450!important;
   margin-left:8px!important;
 }}
 .file-pill{{

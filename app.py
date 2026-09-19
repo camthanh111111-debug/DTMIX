@@ -393,8 +393,8 @@ hr{{margin:.45rem 0!important}}
 /* Tô xanh chữ Upload và biểu tượng mũi tên tải lên */
 [data-testid="stFileUploaderDropzone"] button{{
   color:#005BAA!important;
-  font-size:20px!important;
-  border:1.5px solid #86BCEB!important;
+  font-size:25px!important;
+  border:2px solid #86BCEB!important;
   background:#FFFFFF!important;
   border-radius:9px!important;
   min-height:42px!important;

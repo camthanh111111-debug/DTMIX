@@ -343,25 +343,25 @@ hr{{margin:.45rem 0!important}}
   text-align:center!important;
 }}
 
-/* Khu vực tải đề gốc: nhỏ gọn, không viền; chỉ nền vùng upload */
+/* Khu vực tải đề gốc: gọn, một hàng, nút Upload nổi bật */
 .upload-zone-title{{
   color:#0E5FA8;
   font-weight:900;
   font-size:16px;
   text-align:center;
   letter-spacing:.15px;
-  margin-bottom:2px;
+  margin-bottom:1px;
 }}
 .upload-zone-sub{{
   color:#50708F;
   font-size:13.5px;
   text-align:center;
-  margin-bottom:6px;
+  margin-bottom:4px;
 }}
 [data-testid="stFileUploader"]{{
-  width:52%!important;
-  max-width:560px!important;
-  min-width:360px!important;
+  width:48%!important;
+  max-width:500px!important;
+  min-width:330px!important;
   margin:0 auto!important;
   background:transparent!important;
   border:0!important;
@@ -370,24 +370,68 @@ hr{{margin:.45rem 0!important}}
   box-shadow:none!important;
 }}
 [data-testid="stFileUploaderDropzone"]{{
+  min-height:54px!important;
   background:#E7F3FF!important;
   border:0!important;
   border-radius:10px!important;
   box-shadow:none!important;
-  padding:.45rem .65rem!important;
+  padding:.28rem .5rem!important;
+}}
+/* Dồn nội dung vùng thả file thành một hàng */
+[data-testid="stFileUploaderDropzone"] section{{
+  padding:0!important;
+  min-height:44px!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:10px!important;
+}}
+/* Ẩn dòng mô tả mặc định trong dropzone vì đã có hướng dẫn ngay phía trên */
+[data-testid="stFileUploaderDropzoneInstructions"]{{
+  display:none!important;
+}}
+/* Tô xanh chữ Upload và biểu tượng mũi tên tải lên */
+[data-testid="stFileUploaderDropzone"] button{{
+  color:#0B66C3!important;
+  border:1.5px solid #86BCEB!important;
+  background:#FFFFFF!important;
+  border-radius:9px!important;
+  min-height:38px!important;
+  padding:.35rem .72rem!important;
+  font-weight:850!important;
+  box-shadow:0 2px 7px rgba(38,105,181,.10)!important;
+  white-space:nowrap!important;
+}}
+[data-testid="stFileUploaderDropzone"] button:hover{{
+  color:#074F98!important;
+  border-color:#4F9BDD!important;
+  background:#F7FBFF!important;
+}}
+[data-testid="stFileUploaderDropzone"] button svg{{
+  color:#0B66C3!important;
+  fill:currentColor!important;
+  stroke:currentColor!important;
+}}
+/* Đưa thông tin dung lượng/định dạng lên ngay sau chữ Upload */
+[data-testid="stFileUploaderDropzone"] button::after{{
+  content:"  • 100MB per file • DOCX";
+  color:#667D94!important;
+  font-size:12.6px!important;
+  font-weight:650!important;
+  margin-left:8px!important;
 }}
 .file-pill{{
   display:block!important;
-  width:52%!important;
-  max-width:560px!important;
-  min-width:360px!important;
-  margin:4px auto 0!important;
+  width:48%!important;
+  max-width:500px!important;
+  min-width:330px!important;
+  margin:3px auto 0!important;
   text-align:center!important;
   background:transparent!important;
   border:0!important;
   color:#0E5FA8!important;
   font-weight:850!important;
-  padding:2px 5px!important;
+  padding:1px 5px!important;
 }}
 
 /* Trộn & xuất ngay sau phần tự động kiểm tra */
@@ -2362,22 +2406,54 @@ if engine and st.session_state.get("pending_mix"):
 # GUIDE
 # ============================================================
 st.markdown("---")
-with st.expander("📖 Hướng dẫn nhanh & quy ước g1/g2/g3", expanded=False):
+with st.expander("📖 Hướng dẫn sử dụng DTMIX chi tiết", expanded=False):
     st.markdown(
         """
-**Chế độ tự động:** dùng đề được chia theo `PHẦN I`, `PHẦN II`, `PHẦN III`, `PHẦN IV`.
+### 1. Chuẩn bị file đề gốc
+- DTMIX nhận file **Word `.docx`**, dung lượng tối đa **100 MB/file**.
+- Nên giữ cấu trúc câu hỏi rõ ràng: `Câu 1`, `Câu 2`...; các phương án dùng `A.`, `B.`, `C.`, `D.`.
+- Với đề chia theo chương trình hiện hành, nên đặt tiêu đề rõ: `PHẦN I`, `PHẦN II`, `PHẦN III`, `PHẦN IV` để chế độ **Tự động** nhận diện chính xác hơn.
+- Không cần xóa hình ảnh, bảng hay công thức trong Word; DTMIX sẽ cố gắng giữ nguyên khi trộn và xuất đề.
 
-**YoungMix:**
-- `g0`: không hoán vị.
-- `g1`: chỉ hoán vị câu hỏi.
-- `g2`: chỉ hoán vị phương án/đáp án.
-- `g3`: hoán vị cả câu hỏi và phương án.
-- `g4`: nhóm tự luận.
-- `<#g1>`, `<#g3>`...: cố định vị trí nhóm.
+### 2. Tải đề lên và chọn chế độ xử lý
+- Ở mục **1. ĐỀ GỐC**, kéo thả file Word vào vùng màu xanh hoặc bấm **Upload** để chọn file.
+- Ở mục **2. Chế độ xử lý**, chọn một trong hai cách:
+  - **Tự động PHẦN I–IV:** phù hợp khi đề đã chia sẵn theo các phần.
+  - **Kí hiệu nhóm g1/g2/g3/g4:** dùng khi muốn kiểm soát cách đảo theo từng nhóm câu hỏi.
 
-**Đáp án:** Phần I/II nên gạch chân hoặc tô đỏ đáp án đúng trong Word. Phần III dùng `Đáp án:` hoặc `A. giá trị`.
+### 3. Quy ước nhóm YoungMix
+- `g0`: giữ nguyên, **không hoán vị**.
+- `g1`: **chỉ hoán vị thứ tự câu hỏi** trong nhóm.
+- `g2`: **chỉ hoán vị phương án/đáp án** của từng câu.
+- `g3`: hoán vị **cả câu hỏi và phương án**.
+- `g4`: nhóm **tự luận**, không xử lý như câu trắc nghiệm nhiều lựa chọn.
+- Có thể dùng `<#g1>`, `<#g2>`, `<#g3>`... khi cần **cố định vị trí của nhóm** trong đề.
 
-**Quy trình:** tải file → phân tích/rà soát → xem trước → cấu hình → chọn mã đề → bấm **TRỘN & TẢI ZIP**. Khi trộn xong, ZIP được tải tự động.
+### 4. Đánh dấu đáp án đúng trong file Word
+- **Phần I – trắc nghiệm nhiều lựa chọn:** nên **tô đỏ hoặc gạch chân** đúng một phương án đúng.
+- **Phần II – đúng/sai:** có thể đánh dấu các mệnh đề đúng bằng định dạng đáp án mà DTMIX nhận diện.
+- **Phần III – trả lời ngắn:** nên ghi đáp án theo dạng `Đáp án: ...` hoặc `A. giá trị` theo cấu trúc đề đang dùng.
+- Sau khi tải file, hãy xem mục **Rà soát/Phân tích**. Nếu DTMIX báo thiếu hoặc nhận sai đáp án, nên sửa file Word gốc rồi tải lại trước khi trộn.
+
+### 5. Kiểm tra đề trước khi trộn
+- Xem các thông tin DTMIX đã nhận diện: số phần/nhóm, số câu, đáp án và các cảnh báo.
+- Kiểm tra khu vực **Xem trước đề online**:
+  - đáp án DTMIX nhận diện là đúng sẽ được **tô đỏ trong bản xem trước**;
+  - các nội dung còn lại hiển thị màu thường;
+  - **file Word gốc không bị thay đổi** bởi bước xem trước.
+- Nếu có công thức, hình ảnh hoặc bảng, nên lướt nhanh qua vài trang để chắc chắn bố cục vẫn đúng.
+
+### 6. Cấu hình trộn và mã đề
+- Chọn cách trộn cho từng phần/nhóm theo nhu cầu.
+- Nhập hoặc chọn các **mã đề** cần tạo.
+- Với nhóm cần giữ nguyên vị trí hoặc không đảo, kiểm tra lại tùy chọn cố định trước khi xuất.
+
+### 7. Trộn và tải kết quả
+- Khi phần rà soát không còn lỗi quan trọng, bấm **TRỘN & TẢI ZIP**.
+- DTMIX sẽ tạo các mã đề và gói kết quả thành file ZIP để tải về.
+- Sau khi tải, nên mở thử ít nhất **1 mã đề** và **đáp án** để kiểm tra lần cuối trước khi in hoặc phát hành.
+
+> **Mẹo:** Nếu DTMIX nhận diện chưa đúng, cách an toàn nhất là chỉnh lại cấu trúc/đáp án ngay trong file Word gốc, sau đó tải lại file và rà soát lần nữa trước khi trộn.
 """
     )
 

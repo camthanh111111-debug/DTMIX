@@ -423,7 +423,7 @@ hr{{margin:.45rem 0!important}}
  <div class="hero-row">
    <div class="hero-icon">🧪</div>
    <div>
-     <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary)</div>
+     <div class="hero-title">DTMIX Online <span style="font-size:16px;color:var(--primary);font-weight:700"></span></div>
      <div class="hero-sub">Trộn đề trực tuyến • rà soát đáp án • xem trước đề gốc in ra</div>
    </div>
  </div>

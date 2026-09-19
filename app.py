@@ -2492,21 +2492,20 @@ with st.expander("📖 Hướng dẫn sử dụng DTMIX chi tiết", expanded=Fa
 - DTMIX nhận file **Word `.docx`**, dung lượng tối đa **100 MB/file**.
 - Nên giữ cấu trúc câu hỏi rõ ràng: `Câu 1`, `Câu 2`...; các phương án dùng `A.`, `B.`, `C.`, `D.`.
 - Với đề chia theo chương trình hiện hành, nên đặt tiêu đề rõ: `PHẦN I`, `PHẦN II`, `PHẦN III`, `PHẦN IV` để chế độ **Tự động** nhận diện chính xác hơn.
-- Không cần xóa hình ảnh, bảng hay công thức trong Word; DTMIX sẽ cố gắng giữ nguyên khi trộn và xuất đề.
 
 ### 2. Tải đề lên và chọn chế độ xử lý
-- Ở mục **1. ĐỀ GỐC**, kéo thả file Word vào vùng màu xanh hoặc bấm **Upload** để chọn file.
+- Ở mục **1. Tải đề cần trộn**, kéo thả file Word vào vùng màu xanh hoặc bấm **Upload** để chọn file.
 - Ở mục **2. Chế độ xử lý**, chọn một trong hai cách:
   - **Tự động PHẦN I–IV:** phù hợp khi đề đã chia sẵn theo các phần.
   - **Kí hiệu nhóm g1/g2/g3/g4:** dùng khi muốn kiểm soát cách đảo theo từng nhóm câu hỏi.
 
-### 3. Quy ước nhóm YoungMix
-- `g0`: giữ nguyên, **không hoán vị**.
-- `g1`: **chỉ hoán vị thứ tự câu hỏi** trong nhóm.
-- `g2`: **chỉ hoán vị phương án/đáp án** của từng câu.
-- `g3`: hoán vị **cả câu hỏi và phương án**.
-- `g4`: nhóm **tự luận**, không xử lý như câu trắc nghiệm nhiều lựa chọn.
-- Có thể dùng `<#g1>`, `<#g2>`, `<#g3>`... khi cần **cố định vị trí của nhóm** trong đề.
+### 3. Quy ước nhóm trong DTMIX
+- `<g0>`: giữ nguyên, **không hoán vị**.
+- `<g1>`: **chỉ hoán vị thứ tự câu hỏi** trong nhóm.
+- `<g2>`: **chỉ hoán vị phương án/đáp án** của từng câu.
+- `<g3>`: hoán vị **cả câu hỏi và phương án**.
+- `<g4>`: nhóm **tự luận**, không xử lý như câu trắc nghiệm nhiều lựa chọn.
+- Có thể dùng `<#g1>`, `<#g2>`, `<#g3>`... khi cần **cố định vị trí của nhóm** trong đề hoặc khi đưa đề vào rồi tùy chọn ở cấu hình trộn.
 
 ### 4. Đánh dấu đáp án đúng trong file Word
 - **Phần I – trắc nghiệm nhiều lựa chọn:** nên **tô đỏ hoặc gạch chân** đúng một phương án đúng.
@@ -2537,6 +2536,6 @@ with st.expander("📖 Hướng dẫn sử dụng DTMIX chi tiết", expanded=Fa
     )
 
 st.markdown(
-    '<div class="footer">DTMIX Online• Tối ưu màn hình máy tính ở 100% • Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
+    '<div class="footer">DTMIX Online• Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
     unsafe_allow_html=True,
 )

@@ -371,7 +371,7 @@ hr{{margin:.45rem 0!important}}
 }}
 [data-testid="stFileUploaderDropzone"]{{
   min-height:54px!important;
-  background:#E7F3FF!important;
+  background:#FFFFFF!important;
   border:0!important;
   border-radius:10px!important;
   box-shadow:none!important;

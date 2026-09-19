@@ -371,7 +371,7 @@ hr{{margin:.45rem 0!important}}
 }}
 [data-testid="stFileUploaderDropzone"]{{
   min-height:54px!important;
-  background:#FFFFFF!important;
+  background:#E7F3FF!important;
   border:0!important;
   border-radius:10px!important;
   box-shadow:none!important;
@@ -435,6 +435,30 @@ hr{{margin:.45rem 0!important}}
   font-weight:450!important;
   margin-left:8px!important;
 }}
+/* Thẻ đề đã tải lên: nền kem vàng nhạt để nổi bật, dễ nhận biết */
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"],
+.st-key-source_file_card{{
+  background:linear-gradient(135deg,#FFF9E8,#FFF1C7)!important;
+  border:1.5px solid #E9BD55!important;
+  border-radius:14px!important;
+  box-shadow:0 4px 12px rgba(166,116,20,.14)!important;
+}}
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"]{{
+  padding:7px 10px!important;
+}}
+.st-key-source_file_card .stButton>button{{
+  background:#FFFFFF!important;
+  border:1.5px solid #D99A38!important;
+  color:#9B5D00!important;
+  font-weight:850!important;
+  box-shadow:0 2px 7px rgba(155,93,0,.10)!important;
+}}
+.st-key-source_file_card .stButton>button:hover{{
+  background:#FFF4D6!important;
+  border-color:#C9851A!important;
+  color:#7A4800!important;
+}}
+
 .file-pill{{
   display:block!important;
   width:48%!important;
@@ -2177,7 +2201,7 @@ with st.container(border=True):
             # Thẻ file sau khi tải lên: đặt giữa, rộng tương đương vùng Upload ban đầu.
             _left, file_card_col, _right = st.columns([1, 2, 1], gap="small")
             with file_card_col:
-                with st.container(border=True):
+                with st.container(border=True, key="source_file_card"):
                     info_col, remove_col = st.columns([3.8, 1.7], gap="small", vertical_alignment="center")
                     with info_col:
                         st.markdown(
@@ -2207,7 +2231,7 @@ with st.container(border=True):
         st.caption("<g1>: đảo câu • <g2>: Đảo phương án • <g3>: cả hai")
 
     with code_col:
-        st.markdown('<div class="tool-card-title">3. 🏷️ Số Lượng đề / Kiểu mã đề</div>', unsafe_allow_html=True)
+        st.markdown('<div class="tool-card-title">3. 🏷️ Số lượng đề / Kiểu mã đề</div>', unsafe_allow_html=True)
         top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
 
     # Xác định engine hiện tại có đúng file/chế độ không

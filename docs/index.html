@@ -1,50 +1,3502 @@
-<!DOCTYPE html>
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import hmac
+import html
+import io
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+import streamlit as st
+import streamlit.components.v1 as components
+from docx.oxml.ns import qn
+from lxml import etree
+
+try:
+    import fitz  # PyMuPDF - dùng để dựng trang PDF thành ảnh preview
+except Exception:
+    fitz = None
+
+from engine import DTMIXWebEngine
+
+# ============================================================
+# DTMIX ONLINE 1.3 — ONE PAGE WORKSPACE
+# ============================================================
+st.set_page_config(
+    page_title="DTMIX Online",
+    page_icon="🧪",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ============================================================
+# AUTH — SUPABASE + CHẾ ĐỘ XEM
+# ============================================================
+# Streamlit Secrets:
+#   SUPABASE_URL = "https://xxxx.supabase.co"
+#   SUPABASE_ANON_KEY = "sb_publishable_..."
+#   DTMIX_ALLOW_SIGNUP = true
+#   DTMIX_PUBLIC_URL = "https://dtmix.a1dbm.io.vn/"
+#   DTMIX_OAUTH_STATE_SECRET = "..."
+
+FREE_MIX_LIMIT = 3
+PLAN_PRICES_VND = {"YEAR1": 50_000, "YEAR2": 100_000}
+PAID_PLANS = {"YEAR", "YEAR1", "YEAR2"}
+
+
+def _secret_value(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = os.environ.get(name, default)
+    return default if value is None else str(value).strip()
+
+
+def _secret_bool(name: str, default: bool = False) -> bool:
+    raw = _secret_value(name, "true" if default else "false").lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _supabase_config() -> tuple[str, str]:
+    return (
+        _secret_value("SUPABASE_URL").rstrip("/"),
+        _secret_value("SUPABASE_ANON_KEY"),
+    )
+
+
+class DTMIXAuthError(RuntimeError):
+    pass
+
+
+def _friendly_auth_error(message: str) -> str:
+    msg = (message or "").strip()
+    low = msg.lower()
+    mappings = [
+        ("invalid login credentials", "Email hoặc mật khẩu không đúng."),
+        ("email not confirmed", "Email chưa được xác minh."),
+        ("user already registered", "Email này đã được đăng ký."),
+        ("password should be at least", "Mật khẩu chưa đủ độ dài tối thiểu."),
+        ("signup is disabled", "Hệ thống hiện đang tắt đăng ký tài khoản mới."),
+        ("email rate limit exceeded", "Bạn đã thao tác email quá nhiều lần. Vui lòng thử lại sau."),
+        ("over_email_send_rate_limit", "Bạn đã thao tác email quá nhiều lần. Vui lòng thử lại sau."),
+    ]
+    for needle, vi in mappings:
+        if needle in low:
+            return vi
+    return msg or "Không thể xác thực tài khoản. Vui lòng thử lại."
+
+
+def _supabase_json(
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    access_token: str | None = None,
+    query: dict | None = None,
+    timeout: int = 20,
+):
+    base_url, anon_key = _supabase_config()
+    if not base_url or not anon_key:
+        raise DTMIXAuthError("DTMIX chưa được cấu hình Supabase.")
+
+    url = f"{base_url}{path}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query, doseq=True)
+
+    headers = {
+        "apikey": anon_key,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except Exception:
+                return {"raw": raw.decode("utf-8", errors="replace")}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(raw)
+        except Exception:
+            detail = {"message": raw}
+        message = (
+            detail.get("message")
+            or detail.get("msg")
+            or detail.get("error_description")
+            or detail.get("error")
+            or f"HTTP {exc.code}"
+        )
+        raise DTMIXAuthError(_friendly_auth_error(str(message))) from exc
+    except urllib.error.URLError as exc:
+        raise DTMIXAuthError("Không kết nối được máy chủ đăng nhập. Vui lòng thử lại.") from exc
+
+
+def _clear_workspace_session() -> None:
+    """Xóa dữ liệu làm việc khi đăng xuất/hết phiên để khách chỉ còn chế độ xem."""
+    exact = {
+        "dtmix_engine", "dtmix_signature", "mix_result", "pending_mix", "pending_codes",
+        "source_docx_bytes", "source_docx_name", "source_docx_size",
+    }
+    for key in list(st.session_state.keys()):
+        if key in exact or key.startswith("source_docx_"):
+            obj = st.session_state.get(key)
+            if key == "dtmix_engine" and obj:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+            st.session_state.pop(key, None)
+
+
+def _clear_auth_session(*, clear_workspace: bool = False) -> None:
+    for key in (
+        "auth_access_token", "auth_refresh_token", "auth_expires_at",
+        "auth_user", "auth_subscription", "auth_mix_usage",
+    ):
+        st.session_state.pop(key, None)
+    if clear_workspace:
+        _clear_workspace_session()
+
+
+def _store_auth_session(data: dict) -> None:
+    access_token = data.get("access_token") or ""
+    refresh_token = data.get("refresh_token") or ""
+    user = data.get("user") or {}
+    expires_in = int(data.get("expires_in") or 3600)
+
+    if access_token:
+        st.session_state["auth_access_token"] = access_token
+    if refresh_token:
+        st.session_state["auth_refresh_token"] = refresh_token
+    st.session_state["auth_expires_at"] = int(time.time()) + max(60, expires_in)
+
+    if not user and access_token:
+        try:
+            user = _supabase_json("/auth/v1/user", access_token=access_token)
+        except Exception:
+            user = {}
+    st.session_state["auth_user"] = user
+
+
+def _login_with_password(email: str, password: str) -> None:
+    data = _supabase_json(
+        "/auth/v1/token",
+        method="POST",
+        query={"grant_type": "password"},
+        payload={"email": email.strip(), "password": password},
+    )
+    if not data.get("access_token"):
+        raise DTMIXAuthError("Đăng nhập không thành công.")
+    _store_auth_session(data)
+
+
+def _signup_with_password(full_name: str, email: str, password: str) -> dict:
+    return _supabase_json(
+        "/auth/v1/signup",
+        method="POST",
+        payload={
+            "email": email.strip(),
+            "password": password,
+            "data": {"full_name": full_name.strip()},
+        },
+    )
+
+
+def _refresh_auth_if_needed() -> None:
+    if not st.session_state.get("auth_access_token"):
+        return
+    expires_at = int(st.session_state.get("auth_expires_at") or 0)
+    if expires_at and time.time() < expires_at - 90:
+        return
+    refresh_token = st.session_state.get("auth_refresh_token")
+    if not refresh_token:
+        _clear_auth_session(clear_workspace=True)
+        return
+    try:
+        data = _supabase_json(
+            "/auth/v1/token",
+            method="POST",
+            query={"grant_type": "refresh_token"},
+            payload={"refresh_token": refresh_token},
+        )
+        _store_auth_session(data)
+    except Exception:
+        _clear_auth_session(clear_workspace=True)
+
+
+def _load_subscription() -> dict:
+    user = st.session_state.get("auth_user") or {}
+    user_id = user.get("id")
+    token = st.session_state.get("auth_access_token")
+    fallback = {"plan": "FREE", "status": "active", "expires_at": None, "source": "fallback"}
+    if not user_id or not token:
+        return fallback
+    try:
+        rows = _supabase_json(
+            "/rest/v1/subscriptions",
+            access_token=token,
+            query={
+                "user_id": f"eq.{user_id}",
+                "select": "plan,status,starts_at,expires_at,updated_at",
+                "order": "updated_at.desc",
+                "limit": "1",
+            },
+        )
+        if isinstance(rows, list) and rows:
+            row = dict(rows[0])
+            row.setdefault("plan", "FREE")
+            row.setdefault("status", "active")
+            row["source"] = "database"
+            return row
+    except Exception:
+        pass
+    return fallback
+
+
+def _load_mix_usage() -> dict:
+    user = st.session_state.get("auth_user") or {}
+    user_id = user.get("id")
+    token = st.session_state.get("auth_access_token")
+    fallback = {"successful_mixes": 0, "updated_at": None, "source": "fallback"}
+    if not user_id or not token:
+        return fallback
+    try:
+        rows = _supabase_json(
+            "/rest/v1/mix_usage",
+            access_token=token,
+            query={
+                "user_id": f"eq.{user_id}",
+                "select": "successful_mixes,updated_at",
+                "limit": "1",
+            },
+        )
+        if isinstance(rows, list) and rows:
+            row = dict(rows[0])
+            row["successful_mixes"] = int(row.get("successful_mixes") or 0)
+            row["source"] = "database"
+            return row
+    except Exception:
+        pass
+    return fallback
+
+
+def _plan_code(subscription: dict | None = None) -> str:
+    subscription = subscription or st.session_state.get("auth_subscription") or {}
+    return str(subscription.get("plan") or "FREE").upper()
+
+
+def _plan_label(subscription: dict | None = None) -> str:
+    code = _plan_code(subscription)
+    return {
+        "FREE": "FREE",
+        "YEAR": "1 NĂM",
+        "YEAR1": "1 NĂM",
+        "YEAR2": "2 NĂM",
+        "ADMIN": "ADMIN",
+    }.get(code, code)
+
+
+def _free_mix_used(usage: dict | None = None) -> int:
+    usage = usage or st.session_state.get("auth_mix_usage") or {}
+    try:
+        return max(0, int(usage.get("successful_mixes") or 0))
+    except Exception:
+        return 0
+
+
+def _free_mix_remaining(usage: dict | None = None) -> int:
+    return max(0, FREE_MIX_LIMIT - _free_mix_used(usage))
+
+
+def _record_successful_mix() -> dict:
+    """Ghi nhận 1 lượt trộn thành công. FREE chỉ được tối đa 3 lượt toàn tài khoản."""
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return {"allowed": False, "reason": "Bạn chưa đăng nhập."}
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_record_successful_mix",
+        method="POST",
+        payload={},
+        access_token=token,
+    )
+    row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    # Tải lại số lượt sau RPC để giao diện luôn đồng bộ.
+    st.session_state["auth_mix_usage"] = _load_mix_usage()
+    return row
+
+
+def _request_upgrade(plan: str) -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Bạn cần đăng nhập trước khi đăng ký gói.")
+    plan = str(plan or "").upper()
+    if plan not in PLAN_PRICES_VND:
+        raise DTMIXAuthError("Gói đăng ký không hợp lệ.")
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_request_upgrade",
+        method="POST",
+        payload={"p_plan": plan},
+        access_token=token,
+    )
+    return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
+def _subscription_is_allowed(subscription: dict) -> tuple[bool, str]:
+    plan = _plan_code(subscription)
+    status = str(subscription.get("status") or "active").lower()
+    if plan == "ADMIN":
+        return True, ""
+    if status not in {"active", "trial", "trialing"}:
+        return False, "Gói sử dụng hiện không hoạt động."
+    expires_at = subscription.get("expires_at")
+    if plan in PAID_PLANS and not expires_at:
+        return False, "Gói trả phí chưa có thời hạn sử dụng."
+    if expires_at:
+        try:
+            dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+                return False, "Gói sử dụng đã hết hạn."
+        except Exception:
+            pass
+    return True, ""
+
+
+def _subscription_status(subscription: dict) -> tuple[str, str]:
+    status = str(subscription.get("status") or "active").lower()
+    allowed, reason = _subscription_is_allowed(subscription)
+    if not allowed:
+        return ("Hết hạn" if "hết hạn" in reason.lower() else "Tạm khóa", "bad")
+    if status in {"trial", "trialing"}:
+        return "Dùng thử", "warn"
+    return "Đang hoạt động", "good"
+
+
+def _format_account_date(value) -> str:
+    if not value:
+        return "Không giới hạn"
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return str(value)
+
+
+def _logout() -> None:
+    token = st.session_state.get("auth_access_token")
+    if token:
+        try:
+            _supabase_json("/auth/v1/logout", method="POST", access_token=token)
+        except Exception:
+            pass
+    _clear_auth_session(clear_workspace=True)
+    st.session_state["auth_just_logged_out"] = True
+
+
+def _auth_logged_in() -> bool:
+    return bool(st.session_state.get("auth_access_token") and st.session_state.get("auth_user"))
+
+
+def _auth_access_reason() -> tuple[bool, str]:
+    if not _auth_logged_in():
+        return False, "Hãy đăng nhập để sử dụng DTMIX."
+    subscription = st.session_state.get("auth_subscription") or {}
+    allowed, reason = _subscription_is_allowed(subscription)
+    if not allowed:
+        return False, reason
+    if _plan_code(subscription) == "FREE" and _free_mix_remaining() <= 0:
+        return False, "Bạn đã dùng hết 3 lượt trộn miễn phí. Hãy nâng cấp gói để tiếp tục sử dụng."
+    return True, ""
+
+
+def _auth_can_use_app() -> bool:
+    return _auth_access_reason()[0]
+
+
+def _auth_config_ready() -> bool:
+    base_url, anon_key = _supabase_config()
+    return bool(base_url and anon_key)
+
+
+def _render_auth_config_error() -> None:
+    st.error("DTMIX chưa được cấu hình Supabase nên chưa thể đăng nhập/đăng ký.")
+    st.caption("Hãy kiểm tra SUPABASE_URL và SUPABASE_ANON_KEY trong Streamlit → Settings → Secrets.")
+
+
+def _oauth_public_url() -> str:
+    """URL công khai quay về sau OAuth. Ưu tiên tên miền DTMIX của người dùng."""
+    url = _secret_value("DTMIX_PUBLIC_URL", "https://dtmix.a1dbm.io.vn/").strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/") + "/"
+
+
+def _oauth_state_secret() -> str:
+    return _secret_value("DTMIX_OAUTH_STATE_SECRET")
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _google_oauth_url() -> str:
+    """Tạo URL Google OAuth theo PKCE mà không cần lưu verifier trong session."""
+    base_url, _ = _supabase_config()
+    secret = _oauth_state_secret()
+    if not base_url or not secret:
+        return ""
+
+    state = secrets.token_urlsafe(24)
+    verifier = _b64url(hmac.new(secret.encode("utf-8"), state.encode("utf-8"), hashlib.sha256).digest())
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    redirect_to = _oauth_public_url() + "?oauth_state=" + urllib.parse.quote(state, safe="")
+    params = {
+        "provider": "google",
+        "redirect_to": redirect_to,
+        "code_challenge": challenge,
+        "code_challenge_method": "s256",
+    }
+    return f"{base_url}/auth/v1/authorize?{urllib.parse.urlencode(params)}"
+
+
+def _qp(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        value = value[-1] if value else ""
+    return str(value or "")
+
+
+def _remove_oauth_query_params() -> None:
+    for key in ("code", "oauth_state", "error", "error_description"):
+        try:
+            del st.query_params[key]
+        except Exception:
+            pass
+
+
+def _handle_google_oauth_callback() -> None:
+    """Đổi auth code của Supabase lấy session sau khi Google chuyển người dùng về DTMIX."""
+    code = _qp("code")
+    state = _qp("oauth_state")
+    error = _qp("error")
+    error_description = _qp("error_description")
+
+    if error:
+        st.session_state["auth_oauth_error"] = error_description or error
+        _remove_oauth_query_params()
+        st.rerun()
+
+    if not code or not state or _auth_logged_in():
+        return
+
+    secret = _oauth_state_secret()
+    if not secret:
+        st.session_state["auth_oauth_error"] = (
+            "Thiếu DTMIX_OAUTH_STATE_SECRET trong Streamlit Secrets nên chưa thể hoàn tất đăng nhập Google."
+        )
+        _remove_oauth_query_params()
+        st.rerun()
+
+    verifier = _b64url(hmac.new(secret.encode("utf-8"), state.encode("utf-8"), hashlib.sha256).digest())
+    try:
+        data = _supabase_json(
+            "/auth/v1/token",
+            method="POST",
+            query={"grant_type": "pkce"},
+            payload={"auth_code": code, "code_verifier": verifier},
+        )
+        if not data.get("access_token"):
+            raise DTMIXAuthError("Google không trả về phiên đăng nhập hợp lệ.")
+        _store_auth_session(data)
+        st.session_state["auth_subscription"] = _load_subscription()
+        st.session_state["auth_mix_usage"] = _load_mix_usage()
+        st.session_state["auth_just_logged_in"] = True
+        st.session_state["auth_google_success"] = True
+    except DTMIXAuthError as exc:
+        st.session_state["auth_oauth_error"] = str(exc)
+    finally:
+        _remove_oauth_query_params()
+    st.rerun()
+
+
+def _render_google_login_button() -> None:
+    oauth_url = _google_oauth_url()
+    st.markdown('<div class="auth-or"><span>hoặc</span></div>', unsafe_allow_html=True)
+    if oauth_url:
+        # DTMIX đang chạy bên trong iframe của GitHub Pages. Điều hướng OAuth bằng
+        # một thẻ <a target="_top"> có thể bị trình duyệt chặn trong một số trường hợp.
+        # Component nhỏ dưới đây gửi một postMessage lên trang dtmix.a1dbm.io.vn;
+        # index.html sẽ nhận thông điệp và điều hướng cửa sổ trên cùng sang Supabase.
+        js_oauth_url = json.dumps(oauth_url)
+        components.html(
+            f"""
+<!doctype html>
 <html lang="vi">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DTMIX Online</title>
-  <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#fff; }
-    iframe { position:fixed; inset:0; width:100%; height:100dvh; border:0; background:#fff; }
-  </style>
+<meta charset="utf-8">
+<style>
+  html,body{{margin:0;padding:0;background:transparent;font-family:Inter,"Segoe UI",Arial,sans-serif}}
+  #google-login{{
+    width:100%;height:43px;border:1px solid #C9D8E7;border-radius:10px;background:#fff;
+    color:#23384E;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;
+    justify-content:center;gap:9px;box-shadow:0 2px 7px rgba(50,80,110,.05);
+  }}
+  #google-login:hover{{background:#F7FAFD;border-color:#9FBFD9}}
+  .g{{font-size:18px;font-weight:900;color:#4285F4}}
+</style>
 </head>
 <body>
-  <iframe id="dtmix-frame" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
-  <script>
-    const STREAMLIT_APP = "https://dtmixonline.streamlit.app/";
-    const SUPABASE_HOST = "hqkgkdszkngxtbrsadra.supabase.co";
+<button id="google-login" type="button"><span class="g">G</span><span>Đăng nhập bằng Google</span></button>
+<script>
+(() => {{
+  const oauthUrl = {js_oauth_url};
+  const btn = document.getElementById('google-login');
+  btn.addEventListener('click', () => {{
+    // Cách chính: báo cho trang GitHub Pages ở cửa sổ trên cùng điều hướng OAuth.
+    try {{
+      window.top.postMessage({{type:'DTMIX_OAUTH_START', url:oauthUrl}}, '*');
+    }} catch (e) {{}}
 
-    // Khi Supabase trả code OAuth về tên miền DTMIX, chuyển các query parameters
-    // vào iframe Streamlit đúng một lần để app.py hoàn tất PKCE exchange.
-    const params = window.location.search.replace(/^\?/, "");
-    let src = STREAMLIT_APP + "?embed=true";
-    if (params) src += "&" + params;
-    document.getElementById("dtmix-frame").src = src;
-
-    if (params) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    // Streamlit chạy trong iframe. Nút Google trong app gửi DTMIX_OAUTH_START lên đây.
-    // Điều hướng được thực hiện ở cửa sổ trên cùng nên Google/Supabase không bị chặn bởi iframe.
-    window.addEventListener("message", (event) => {
-      const data = event && event.data;
-      if (!data || data.type !== "DTMIX_OAUTH_START" || typeof data.url !== "string") return;
-
-      try {
-        const target = new URL(data.url);
-        const valid =
-          target.protocol === "https:" &&
-          target.hostname === SUPABASE_HOST &&
-          target.pathname.startsWith("/auth/v1/authorize");
-
-        if (!valid) return;
-        window.location.assign(target.toString());
-      } catch (e) {
-        // Bỏ qua URL không hợp lệ.
-      }
-    });
-  </script>
+    // Fallback: nếu trang đang mở trực tiếp trên Streamlit hoặc trình duyệt không relay message,
+    // thử điều hướng top ngay trong chính thao tác click của người dùng.
+    try {{
+      window.open(oauthUrl, '_top');
+    }} catch (e) {{
+      window.open(oauthUrl, '_blank', 'noopener,noreferrer');
+    }}
+  }});
+}})();
+</script>
 </body>
 </html>
+""",
+            height=48,
+            scrolling=False,
+        )
+    else:
+        st.button("G  Đăng nhập bằng Google", disabled=True, use_container_width=True, key=f"google_disabled_{secrets.token_hex(4)}")
+        st.caption("Quản trị viên cần thêm DTMIX_OAUTH_STATE_SECRET vào Streamlit Secrets để bật Google.")
+
+
+def _login_form_body() -> None:
+    if not _auth_config_ready():
+        _render_auth_config_error()
+        return
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">🧪</div>'
+        '<div><div class="auth-dialog-title">Chào mừng trở lại</div>'
+        '<div class="auth-dialog-sub">Đăng nhập để sử dụng đầy đủ DTMIX Online</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("dtmix_login_form", clear_on_submit=False):
+        email = st.text_input("Email", placeholder="tenban@example.com", key="auth_login_email")
+        password = st.text_input("Mật khẩu", type="password", key="auth_login_password")
+        submitted = st.form_submit_button("Đăng nhập", type="primary", use_container_width=True)
+    if submitted:
+        if not email.strip() or not password:
+            st.error("Vui lòng nhập đầy đủ email và mật khẩu.")
+        else:
+            try:
+                with st.spinner("Đang đăng nhập..."):
+                    _login_with_password(email, password)
+                    st.session_state["auth_subscription"] = _load_subscription()
+                    st.session_state["auth_mix_usage"] = _load_mix_usage()
+                st.session_state["auth_just_logged_in"] = True
+                st.rerun()
+            except DTMIXAuthError as exc:
+                st.error(str(exc))
+    _render_google_login_button()
+    st.markdown('<div class="auth-security-note">🔒 Tài khoản được xác thực an toàn bởi Supabase Auth.</div>', unsafe_allow_html=True)
+
+
+def _signup_form_body() -> None:
+    if not _auth_config_ready():
+        _render_auth_config_error()
+        return
+    if not _secret_bool("DTMIX_ALLOW_SIGNUP", True):
+        st.info("Đăng ký tài khoản mới hiện đang tạm khóa.")
+        return
+    st.markdown(
+        '<div class="auth-dialog-hero signup"><div class="auth-dialog-icon">✨</div>'
+        '<div><div class="auth-dialog-title">Tạo tài khoản DTMIX</div>'
+        '<div class="auth-dialog-sub">Bắt đầu với tài khoản miễn phí</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("dtmix_signup_form", clear_on_submit=False):
+        full_name = st.text_input("Họ và tên", key="auth_signup_name")
+        email = st.text_input("Email đăng ký", placeholder="tenban@example.com", key="auth_signup_email")
+        password = st.text_input("Mật khẩu", type="password", key="auth_signup_password")
+        password2 = st.text_input("Nhập lại mật khẩu", type="password", key="auth_signup_password2")
+        submitted = st.form_submit_button("Tạo tài khoản", type="primary", use_container_width=True)
+    if submitted:
+        if not full_name.strip() or not email.strip() or not password:
+            st.error("Vui lòng nhập đầy đủ thông tin.")
+        elif len(password) < 8:
+            st.error("Mật khẩu cần ít nhất 8 ký tự.")
+        elif password != password2:
+            st.error("Hai lần nhập mật khẩu chưa khớp.")
+        else:
+            try:
+                with st.spinner("Đang tạo tài khoản..."):
+                    data = _signup_with_password(full_name, email, password)
+                if data.get("access_token"):
+                    _store_auth_session(data)
+                    st.session_state["auth_subscription"] = _load_subscription()
+                    st.session_state["auth_mix_usage"] = _load_mix_usage()
+                    st.session_state["auth_just_logged_in"] = True
+                    st.session_state["auth_just_registered"] = True
+                    st.rerun()
+                else:
+                    st.success("Đã tạo tài khoản. Hãy kiểm tra email xác nhận rồi đăng nhập.")
+            except DTMIXAuthError as exc:
+                st.error(str(exc))
+    _render_google_login_button()
+
+
+def _upgrade_body() -> None:
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">💎</div>'
+        '<div><div class="auth-dialog-title">Nâng cấp DTMIX</div>'
+        '<div class="auth-dialog-sub">Gói trả phí không giới hạn số lượt trộn trong thời hạn sử dụng.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="upgrade-grid">'
+        '<div class="upgrade-card"><div class="upgrade-name">GÓI 1 NĂM</div><div class="upgrade-price">50.000đ</div><div class="upgrade-note">Sử dụng đầy đủ DTMIX trong 12 tháng</div></div>'
+        '<div class="upgrade-card"><div class="upgrade-name">GÓI 2 NĂM</div><div class="upgrade-price">100.000đ</div><div class="upgrade-note">Sử dụng đầy đủ DTMIX trong 24 tháng</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2, gap="small")
+    with c1:
+        choose1 = st.button("Đăng ký gói 1 năm", type="primary", use_container_width=True, key="upgrade_year1")
+    with c2:
+        choose2 = st.button("Đăng ký gói 2 năm", use_container_width=True, key="upgrade_year2")
+    chosen = "YEAR1" if choose1 else ("YEAR2" if choose2 else "")
+    if chosen:
+        try:
+            _request_upgrade(chosen)
+            st.success(
+                f"Đã ghi nhận yêu cầu gói {'1 năm' if chosen == 'YEAR1' else '2 năm'} "
+                f"({PLAN_PRICES_VND[chosen]:,}đ). Quản trị viên sẽ kích hoạt sau khi xác nhận thanh toán.".replace(",", ".")
+            )
+        except DTMIXAuthError as exc:
+            st.error(str(exc))
+    st.caption("Gói FREE: 3 lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
+
+
+# Streamlit Community Cloud hiện hỗ trợ st.dialog. Có fallback để file vẫn chạy
+# nếu sau này app dùng một bản Streamlit cũ hơn.
+if hasattr(st, "dialog"):
+    @st.dialog("Đăng nhập DTMIX", width="small")
+    def _login_dialog():
+        _login_form_body()
+
+    @st.dialog("Đăng ký tài khoản", width="small")
+    def _signup_dialog():
+        _signup_form_body()
+
+    @st.dialog("Nâng cấp DTMIX", width="small")
+    def _upgrade_dialog():
+        _upgrade_body()
+else:
+    def _login_dialog():
+        st.session_state["auth_inline_panel"] = "login"
+        st.rerun()
+
+    def _signup_dialog():
+        st.session_state["auth_inline_panel"] = "signup"
+        st.rerun()
+
+    def _upgrade_dialog():
+        st.session_state["auth_inline_panel"] = "upgrade"
+        st.rerun()
+
+
+_handle_google_oauth_callback()
+
+
+_refresh_auth_if_needed()
+if _auth_logged_in():
+    st.session_state["auth_subscription"] = _load_subscription()
+    st.session_state["auth_mix_usage"] = _load_mix_usage()
+else:
+    st.session_state.pop("auth_subscription", None)
+    st.session_state.pop("auth_mix_usage", None)
+
+# -------------------- THEME --------------------
+# Người dùng có thể đổi bảng màu; toàn bộ đều là nền sáng, không dùng nền đen.
+_THEME_PRESETS = {
+    "Xanh biển sáng": {
+        "bg": "#F3F8FE", "card": "#FFFFFF", "primary": "#2469B5", "primary2": "#4B9AE8",
+        "hero1": "#E9F3FF", "hero2": "#D8EBFF", "hero_text": "#173A63",
+        "line": "#D7E4F2", "soft": "#F7FAFE", "muted": "#63758A",
+    },
+    "Xanh ngọc": {
+        "bg": "#F2FAF7", "card": "#FFFFFF", "primary": "#247A65", "primary2": "#48A98E",
+        "hero1": "#E6F6F0", "hero2": "#D6EFE7", "hero_text": "#195646",
+        "line": "#D5E9E1", "soft": "#F7FCFA", "muted": "#637970",
+    },
+    "Tím dịu": {
+        "bg": "#F7F4FC", "card": "#FFFFFF", "primary": "#7056AE", "primary2": "#9A82D3",
+        "hero1": "#EFEAFA", "hero2": "#E3DCF5", "hero_text": "#4E3A7D",
+        "line": "#E1DAEE", "soft": "#FBF9FE", "muted": "#726B80",
+    },
+    "Kem sáng": {
+        "bg": "#FBF8F2", "card": "#FFFFFF", "primary": "#8D6738", "primary2": "#B98A50",
+        "hero1": "#F7EEDD", "hero2": "#F0DFC5", "hero_text": "#62451F",
+        "line": "#E9DDCB", "soft": "#FEFCF8", "muted": "#7D7161",
+    },
+}
+_theme_name = st.session_state.get("ui_theme", "Xanh biển sáng")
+_theme = _THEME_PRESETS.get(_theme_name, _THEME_PRESETS["Xanh biển sáng"])
+
+st.markdown(
+    f"""
+<style>
+:root{{
+  --bg:{_theme["bg"]};
+  --card:{_theme["card"]};
+  --primary:{_theme["primary"]};
+  --primary2:{_theme["primary2"]};
+  --hero1:{_theme["hero1"]};
+  --hero2:{_theme["hero2"]};
+  --hero-text:{_theme["hero_text"]};
+  --line:{_theme["line"]};
+  --soft:{_theme["soft"]};
+  --muted:{_theme["muted"]};
+  --ink:#203044;
+  --green:#17785B;
+  --green-bg:#EAF7F1;
+  --amber:#A96A0B;
+  --amber-bg:#FFF6E7;
+  --red:#B93E4B;
+  --red-bg:#FFF0F2;
+}}
+html,body,[class*="css"]{{font-family:Inter,"Segoe UI",Arial,sans-serif}}
+.stApp{{
+  background:
+    radial-gradient(circle at 0 0, color-mix(in srgb, var(--primary2) 12%, transparent), transparent 28rem),
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--primary) 8%, transparent), transparent 25rem),
+    var(--bg);
+  color:var(--ink);
+}}
+.block-container{{max-width:none;width:100%;padding:.18rem 1.0rem 1.4rem}}
+#MainMenu,footer,header{{visibility:hidden}}
+
+/* Hero sáng, không nền đen */
+.hero{{
+  background:linear-gradient(120deg,var(--hero1),var(--hero2));
+  border:1px solid color-mix(in srgb,var(--primary) 18%, white);
+  border-radius:14px;padding:8px 15px;color:var(--hero-text);
+  box-shadow:0 12px 30px rgba(58,91,124,.10);position:relative;overflow:hidden;margin-bottom:6px;
+}}
+.hero:after{{content:"";position:absolute;width:270px;height:270px;border-radius:50%;right:-100px;top:-120px;background:rgba(255,255,255,.45)}}
+.hero-row{{display:flex;align-items:center;gap:14px;position:relative;z-index:2}}
+.hero-icon{{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.65);border:1px solid rgba(255,255,255,.9);font-size:26.33px}}
+.hero-title{{font-size:26.33px;font-weight:850;letter-spacing:-.3px;line-height:1}}
+.hero-sub{{font-size:14.83px;color:color-mix(in srgb,var(--hero-text) 76%, white);margin-top:5px}}
+.hero-side{{margin-left:auto;text-align:right;max-width:330px}}
+.hero-side b{{font-size:14.33px}} .hero-side span{{display:block;color:color-mix(in srgb,var(--hero-text) 72%, white);font-size:13.33px;margin-top:4px}}
+
+.sec{{display:flex;gap:10px;align-items:center;margin:14px 0 7px}}
+.sec-no{{width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--primary),var(--primary2));color:white;display:flex;align-items:center;justify-content:center;font-weight:850;box-shadow:0 5px 12px color-mix(in srgb,var(--primary) 24%, transparent)}}
+.sec-title{{font-size:20.33px;font-weight:820;color:#203044}} .sec-sub{{font-size:14.33px;color:var(--muted);margin-top:1px}}
+
+[data-testid="stVerticalBlockBorderWrapper"]{{
+  border:1px solid var(--line)!important;border-radius:15px!important;background:rgba(255,255,255,.98);
+  box-shadow:0 6px 18px rgba(55,79,104,.045);padding:3px
+}}
+[data-testid="stMetric"]{{background:linear-gradient(180deg,#fff,var(--soft));border:1px solid var(--line);border-radius:13px;padding:10px 13px;box-shadow:0 3px 11px rgba(55,79,104,.035)}}
+[data-testid="stMetricValue"]{{color:var(--primary)}} [data-testid="stMetricLabel"]{{color:var(--muted)}}
+[data-testid="stFileUploaderDropzone"]{{background:var(--soft);border:1.5px dashed color-mix(in srgb,var(--primary2) 65%, white);border-radius:12px;min-height:78px;padding:.45rem}}
+[data-testid="stFileUploaderDropzone"] section{{padding:.2rem .5rem}}
+.stButton>button{{border-radius:9px;font-weight:760;min-height:40px}}
+.stButton>button[kind="primary"]{{background:linear-gradient(90deg,var(--primary),var(--primary2));border:0;box-shadow:0 6px 15px color-mix(in srgb,var(--primary) 22%, transparent)}}
+.stDownloadButton>button{{border-radius:9px;font-weight:760}}
+.stTextInput input,.stNumberInput input{{border-radius:8px;background:#fff!important;color:#23364A!important}}
+.stSelectbox div[data-baseweb="select"]>div{{border-radius:8px;background:#fff!important;color:#23364A!important}}
+.stRadio label,.stCheckbox label{{color:#2B3B4E!important}}
+
+/* Chữ rõ hơn, không cắt label */
+[data-testid="stWidgetLabel"] p{{font-weight:700!important;color:#30455E!important;font-size:15.83px!important}}
+[data-testid="stMarkdownContainer"] p{{line-height:1.48}}
+[data-testid="stToggle"] label{{width:100%!important}}
+[data-testid="stToggle"] label p{{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;font-weight:650!important}}
+[data-baseweb="select"] *{{font-size:15.83px!important}}
+.stCaptionContainer{{color:#73859A!important}}
+div[data-testid="stHorizontalBlock"]{{align-items:flex-start}}
+
+/* Thanh công cụ trên cùng */
+.tool-card-title{{font-size:14.83px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.top-hint{{font-size:13.33px;color:#6D8096;line-height:1.35;margin-top:5px}}
+.top-status{{font-size:13.83px;font-weight:750;color:#176BCE;background:#EEF6FF;border:1px solid #D4E8FB;border-radius:8px;padding:6px 8px;text-align:center}}
+
+/* Thông tin đề dạng ngang */
+.exam-info{{display:grid;grid-template-columns:1.15fr 1.45fr 1.05fr;gap:0;border:1px solid #DCE7F3;border-radius:12px;overflow:hidden;background:#fff;margin:6px 0 11px}}
+.exam-info>div{{padding:9px 12px;border-right:1px solid #E6EDF5;border-bottom:1px solid #E6EDF5;font-size:13.53px;color:#30455E}}
+.exam-info>div:nth-child(3n){{border-right:0}}
+.exam-info>div:nth-last-child(-n+3){{border-bottom:0}}
+.exam-info b{{color:#173B65;margin-right:5px}}
+
+/* Workspace */
+.preview-shell{{background:#F5F9FE;border:1px solid #DDE8F4;border-radius:14px;padding:8px}}
+.preview-heading{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}}
+.preview-heading b{{font-size:17.33px;color:#143A66}}
+.preview-badge{{font-size:13.33px;font-weight:800;color:#0F7357;background:#E8F8F1;border:1px solid #C5EBDD;border-radius:999px;padding:5px 9px}}
+
+/* Right panel clarity */
+.control-title{{font-size:17.33px;font-weight:850;color:#173B65;margin:2px 0 8px}}
+.control-note{{font-size:13.83px;color:#657A91;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin-bottom:8px}}
+.stExpander{{background:#fff;border:1px solid var(--line)!important;border-radius:11px!important}}
+hr{{border-color:#E7EDF4}}
+
+.status-good{{background:var(--green-bg);border:1px solid #BFE5D6;color:#116B50;border-radius:11px;padding:9px 12px;font-weight:750}}
+.status-warn{{background:var(--amber-bg);border:1px solid #EED9AE;color:#955B00;border-radius:11px;padding:9px 12px;font-weight:750}}
+.status-bad{{background:var(--red-bg);border:1px solid #EFC5CB;color:#A53240;border-radius:11px;padding:9px 12px;font-weight:750}}
+.file-pill{{display:inline-block;background:color-mix(in srgb,var(--primary2) 12%, white);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary2) 28%, white);border-radius:999px;padding:4px 9px;font-size:13.83px;font-weight:720}}
+.mini-help{{font-size:13.83px;color:var(--muted);background:var(--soft);border:1px solid var(--line);padding:6px 9px;border-radius:9px;line-height:1.5}}
+.audit-row{{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #EEF2F6;font-size:14.83px;gap:10px}}
+.audit-row:last-child{{border-bottom:0}} .audit-ok{{color:#17785B;font-weight:800}} .audit-warn{{color:#A96A0B;font-weight:800}} .audit-bad{{color:#B93E4B;font-weight:800}}
+.g-badge{{display:inline-block;border-radius:7px;padding:3px 7px;font-size:12.13px;font-weight:850;background:#EAF3FF;color:#176BCE;border:1px solid #D1E3FA}}
+.g1{{background:#EDF8FF;color:#126A9A}} .g2{{background:#F2EEFF;color:#6743B1}} .g3{{background:#EAF8F2;color:#0B7A53}} .g0{{background:#F2F4F7;color:#536174}} .g4{{background:#FFF3E7;color:#A45B00}}
+.word-preview-note{{font-size:13.83px;color:#536A82;background:#F7FAFE;border:1px solid #DFE8F2;border-radius:9px;padding:7px 9px;margin:5px 0 9px}}
+.preview-toolbar{{font-size:13.83px;color:#536A82;background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:7px 9px}}
+.result-ok{{background:var(--green-bg);border:1px solid #BFE5D6;border-radius:11px;color:#116B50;padding:10px 12px;font-weight:750}}
+.footer{{text-align:center;color:#93A0AF;font-size:13.33px;margin-top:22px}}
+
+/* Tổng quan gọn - tối ưu màn hình máy tính ở 100% */
+.summary-compact{{
+  display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:7px;margin:5px 0 5px;
+}}
+.summary-chip{{
+  background:#FFFFFF;border:1px solid var(--line);border-radius:11px;padding:6px 10px;
+  box-shadow:0 2px 8px rgba(45,75,105,.035);min-height:50px;
+}}
+.summary-chip .v{{font-size:23.33px;font-weight:850;color:var(--primary);line-height:1.05}}
+.summary-chip .l{{font-size:13.83px;font-weight:700;color:var(--muted);margin-top:4px}}
+.part-status-grid{{
+  display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:7px;margin:5px 0 7px;
+}}
+.part-status-card{{
+  background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px 9px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:47px;
+}}
+.part-status-card .pn{{font-size:14.83px;font-weight:850;color:#203C5D}}
+.part-status-card .qc{{font-size:13.83px;color:#6D7F93;margin-top:2px}}
+.part-status-card .ans-ok{{font-size:13.83px;font-weight:850;color:#137A5A;text-align:right}}
+.part-status-card .ans-bad{{font-size:13.83px;font-weight:850;color:#B34A39;text-align:right}}
+.workspace-title{{
+  font-size:20.33px;font-weight:850;color:#193B61;margin:7px 0 5px;
+  display:flex;align-items:center;gap:8px;
+}}
+.workspace-title:before{{
+  content:"";width:5px;height:22px;border-radius:5px;background:linear-gradient(var(--primary),var(--primary2));
+}}
+@media(max-width:1200px){{
+  .summary-compact{{grid-template-columns:repeat(2,1fr)}}
+  .part-status-grid{{grid-template-columns:repeat(2,1fr)}}
+}}
+
+
+@media(max-width:1000px){{.hero-side{{display:none}}}}
+
+/* Dồn các khối Streamlit lên gần nhau hơn */
+[data-testid="stVerticalBlock"]{{gap:.48rem!important}}
+[data-testid="stHorizontalBlock"]{{gap:.65rem!important}}
+[data-testid="stFileUploader"]{{margin-bottom:.1rem!important}}
+[data-testid="stFileUploaderDropzone"]{{padding:.45rem .7rem!important;min-height:72px!important}}
+[data-testid="stMetric"]{{padding:7px 10px!important}}
+.stElementContainer{{margin-bottom:.05rem!important}}
+hr{{margin:.45rem 0!important}}
+
+
+/* Cấu hình trộn tự động luôn mở, hiển thị theo hàng ngang */
+.auto-config-wrap{{
+  margin:6px 0 10px;padding:10px 11px;border:1px solid #DCE7F3;
+  border-radius:13px;background:linear-gradient(180deg,#FFFFFF,#F8FBFF);
+}}
+.auto-config-head{{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px;
+}}
+.auto-config-title{{font-size:18.33px;font-weight:850;color:#173B65}}
+.auto-config-sub{{font-size:13.33px;color:#6D8096}}
+.config-part-label{{
+  font-size:14.83px;font-weight:850;color:#173B65;line-height:1.35;padding-top:3px;
+}}
+.config-part-meta{{font-size:13.33px;color:#70839A;margin-top:3px}}
+.config-divider{{height:1px;background:#E8EEF5;margin:7px 0}}
+/* Rà soát từng phần */
+.review-part{{
+  border:1px solid #DCE7F3;border-radius:11px;background:#FFFFFF;padding:9px 10px;margin:0 0 8px;
+}}
+.review-part-title{{font-size:14.83px;font-weight:850;color:#173B65}}
+.review-part-line{{font-size:13.83px;color:#40566F;margin-top:4px;line-height:1.45}}
+.review-ok{{color:#137A5A;font-weight:850}}
+.review-bad{{color:#B33E35;font-weight:850}}
+.review-missing{{
+  margin-top:6px;padding:6px 8px;border-radius:8px;background:#FFF4F1;
+  border:1px solid #F2D0C9;color:#A03B33;font-size:13.33px;font-weight:750;
+}}
+.review-allok{{
+  margin-top:6px;padding:6px 8px;border-radius:8px;background:#ECF8F2;
+  border:1px solid #C8ECDD;color:#137A5A;font-size:13.33px;font-weight:750;
+}}
+
+
+/* Phân tích chi tiết đề / nhóm đặt phía trên preview */
+.analysis-detail-grid{{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:7px;margin:5px 0 9px}}
+.analysis-card{{background:#fff;border:1px solid #DCE7F3;border-radius:11px;padding:8px 10px;min-height:74px}}
+.analysis-card-title{{font-size:14.83px;font-weight:850;color:#173B65;line-height:1.3}}
+.analysis-card-meta{{font-size:13.83px;color:#40566F;margin-top:4px;line-height:1.45}}
+.analysis-card-ok{{font-size:13.33px;color:#137A5A;font-weight:800;margin-top:5px}}
+.analysis-card-bad{{font-size:13.33px;color:#B33E35;font-weight:800;margin-top:5px}}
+/* YoungMix cấu hình luôn mở theo hàng ngang */
+.ym-config-head{{font-size:18.33px;font-weight:850;color:#173B65;margin:6px 0 5px}}
+.ym-config-note{{font-size:13.33px;color:#6C8097;margin-bottom:6px}}
+.preview-side-title{{font-size:16.33px;font-weight:850;color:#173B65;margin-bottom:6px}}
+.preview-side-box{{background:#F8FBFF;border:1px solid #DCE7F3;border-radius:10px;padding:8px 9px;font-size:13.83px;color:#526A83;line-height:1.5}}
+@media(max-width:1200px){{.analysis-detail-grid{{grid-template-columns:repeat(2,1fr)}}}}
+
+
+.codes-live{{
+  margin-top:4px;padding:7px 9px;border-radius:9px;
+  background:#F2F7FD;border:1px solid #DCE8F4;color:#274761;
+  font-size:13.83px;line-height:1.35;word-break:break-word;
+}}
+
+
+/* Giá trị trong các ô nhập căn giữa, dễ quan sát trên một hàng */
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input{{
+  text-align:center!important;
+}}
+
+
+/* Căn giữa nhãn và giá trị của các ô thông tin đầu đề */
+[data-testid="stTextInput"] [data-testid="stWidgetLabel"]{{
+  width:100%!important;
+  display:flex!important;
+  justify-content:center!important;
+  text-align:center!important;
+}}
+[data-testid="stTextInput"] [data-testid="stWidgetLabel"] p{{
+  width:100%!important;
+  text-align:center!important;
+}}
+[data-testid="stTextInput"] input{{
+  text-align:center!important;
+}}
+
+
+
+/* Tăng thêm khoảng 1pt cho chữ điều khiển của Streamlit */
+.stButton > button,
+.stDownloadButton > button,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-baseweb="select"] *,
+[data-testid="stRadio"] label p,
+[data-testid="stCheckbox"] label p,
+[data-testid="stToggle"] label p,
+.stCaptionContainer p{{
+  font-size:15.8px!important;
+}}
+
+/* Căn giữa nội dung trong các ô tổng quan và PHẦN/NHÓM */
+.summary-chip{{
+  text-align:center!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:center!important;
+  align-items:center!important;
+}}
+.summary-chip .v,
+.summary-chip .l{{
+  width:100%!important;
+  text-align:center!important;
+}}
+.analysis-card{{
+  text-align:center!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:center!important;
+  align-items:center!important;
+}}
+.analysis-card-title,
+.analysis-card-meta,
+.analysis-card-ok,
+.analysis-card-bad{{
+  width:100%!important;
+  text-align:center!important;
+}}
+
+/* Khu vực tải đề gốc: gọn, một hàng, nút Upload nổi bật */
+.upload-zone-title{{
+  color:#0E5FA8;
+  font-weight:900;
+  font-size:16px;
+  text-align:center;
+  letter-spacing:.15px;
+  margin-bottom:1px;
+}}
+.upload-zone-sub{{
+  color:#50708F;
+  font-size:13.5px;
+  text-align:center;
+  margin-bottom:4px;
+}}
+[data-testid="stFileUploader"]{{
+  width:48%!important;
+  max-width:500px!important;
+  min-width:330px!important;
+  margin:0 auto!important;
+  background:transparent!important;
+  border:0!important;
+  border-radius:0!important;
+  padding:0!important;
+  box-shadow:none!important;
+}}
+[data-testid="stFileUploaderDropzone"]{{
+  min-height:54px!important;
+  background:#E7F3FF!important;
+  border:0!important;
+  border-radius:10px!important;
+  box-shadow:none!important;
+  padding:.28rem .5rem!important;
+}}
+/* Dồn nội dung vùng thả file thành một hàng */
+[data-testid="stFileUploaderDropzone"] section{{
+  padding:0!important;
+  min-height:44px!important;
+  width:100%!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:10px!important;
+}}
+/* Ẩn dòng mô tả mặc định trong dropzone vì đã có hướng dẫn ngay phía trên */
+[data-testid="stFileUploaderDropzoneInstructions"]{{
+  display:none!important;
+}}
+/* Tô xanh chữ Upload và biểu tượng mũi tên tải lên */
+[data-testid="stFileUploaderDropzone"] button{{
+  width:100%!important;
+  color:#0B66C3!important;
+  font-size:20px!important;
+  font-weight:900!important;
+
+  background:linear-gradient(180deg,#F9FCFF,#EAF4FF)!important;
+  border:1.5px solid #7FB6E8!important;
+  border-radius:12px!important;
+  min-height:46px!important;
+  padding:.4rem .9rem!important;
+
+  box-shadow:0 4px 12px rgba(11,102,195,.18)!important;
+  white-space:nowrap!important;
+
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:10px!important;
+}}
+[data-testid="stFileUploaderDropzone"] button:hover{{
+  color:#074F98!important;
+  border-color:#4F9BDD!important;
+  background:#F7FBFF!important;
+}}
+[data-testid="stFileUploaderDropzone"] button svg{{
+  color:#0B66C3!important;
+  fill:currentColor!important;
+  stroke:currentColor!important;
+
+  background:#DCEEFF!important;
+  border-radius:50%!important;
+  padding:4px!important;
+  box-shadow:0 2px 6px rgba(11,102,195,.16)!important;
+}}
+/* Đưa thông tin dung lượng/định dạng lên ngay sau chữ Upload */
+[data-testid="stFileUploaderDropzone"] button::after{{
+  content:"  • 100MB per file • docx";
+  color:#667D94!important;
+  font-size:12.6px!important;
+  font-weight:450!important;
+  margin-left:8px!important;
+}}
+/* Thẻ đề đã tải lên: nền kem vàng nhạt để nổi bật, dễ nhận biết */
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"],
+.st-key-source_file_card{{
+  background:#9FD7F9!important;
+  border:1.5px solid #55AEE4!important;
+  border-radius:14px!important;
+  box-shadow:0 4px 12px rgba(42,126,180,.14)!important;
+}}
+.st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"]{{
+  padding:7px 10px!important;
+}}
+.st-key-source_file_card .stButton>button{{
+  background:#FFFFFF!important;
+  border:1.5px solid #3C95CE!important;
+  color:#17679B!important;
+  font-weight:850!important;
+  font-size:13.5px!important;
+  white-space:nowrap!important;
+  padding:.35rem .55rem!important;
+  box-shadow:0 2px 7px rgba(23,103,155,.10)!important;
+}}
+.st-key-source_file_card .stButton>button:hover{{
+  background:#EAF7FF!important;
+  border-color:#2F87C0!important;
+  color:#0D5D91!important;
+}}
+
+.file-pill{{
+  display:block!important;
+  width:48%!important;
+  max-width:500px!important;
+  min-width:330px!important;
+  margin:3px auto 0!important;
+  text-align:center!important;
+  background:transparent!important;
+  border:0!important;
+  color:#0E5FA8!important;
+  font-weight:850!important;
+  padding:1px 5px!important;
+}}
+
+/* Trộn & xuất ngay sau phần tự động kiểm tra */
+.mix-action-wrap{{
+  margin:8px 0 5px;
+  padding:9px 12px;
+  border-radius:12px;
+  border:1px solid #CFE2F5;
+  background:linear-gradient(90deg,#EEF7FF,#F8FBFF);
+  text-align:center;
+}}
+.mix-action-title{{
+  color:#164D80;
+  font-size:17px;
+  font-weight:900;
+}}
+.mix-action-sub{{
+  color:#607A94;
+  font-size:12.5px;
+  margin-top:3px;
+}}
+.mix-ready-status{{
+  text-align:center;
+  color:#147253;
+  font-weight:800;
+  font-size:12.5px;
+  margin-top:4px;
+}}
+
+/* Thanh tài khoản */
+.auth-status-pill{{
+  border-radius:999px;padding:3px 7px;text-align:center;font-size:12.2px;font-weight:500;
+  border:0;background:transparent;color:#5D7186;margin:2px 0 0;
+}}
+.auth-status-pill.good{{color:#1D6F5B}}
+.auth-status-pill.warn{{color:#98610A}}
+.auth-status-pill.bad{{color:#A53240}}
+.auth-plan-under{{
+  text-align:center;color:#536A82;font-size:12.6px;font-weight:500;line-height:1.25;margin-top:3px;
+}}
+.view-only-banner{{
+  margin:2px 0 8px;padding:7px 11px;border-radius:10px;background:#F8FBFF;
+  border:1px solid #D8E7F5;color:#516A84;font-size:13.6px;text-align:center;font-weight:650;
+}}
+.st-key-guest_auth_controls{{margin-top:-2px!important}}
+.st-key-guest_auth_controls [data-testid="stButton"] button{{
+  min-height:42px!important;border-radius:10px!important;font-weight:800!important;
+}}
+.st-key-account_controls button{{
+  border-radius:10px!important;font-weight:800!important;min-height:43px!important;
+}}
+.account-compact{{padding:1px 0 2px}}
+.account-compact-name{{font-size:17px;font-weight:800;color:#263A51}}
+.account-compact-email{{font-size:13px;color:#64809B;margin-top:2px;word-break:break-all}}
+.account-mini-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}}
+.account-mini-card{{border:1px solid #D7E5F3;background:#F8FBFF;border-radius:10px;padding:8px 9px;min-width:0}}
+.account-mini-label{{font-size:11.5px;color:#72859A;font-weight:650;margin-bottom:2px}}
+.account-mini-value{{font-size:13.2px;color:#245B91;font-weight:800;white-space:normal;overflow-wrap:anywhere;line-height:1.25}}
+.account-expiry{{font-size:12.2px;color:#6E7E90;margin:4px 0 2px}}
+
+.upgrade-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:7px 0 10px}}
+.upgrade-card{{border:1px solid #CFE0F1;background:linear-gradient(180deg,#FFFFFF,#F5FAFF);border-radius:13px;padding:12px;text-align:center}}
+.upgrade-name{{font-size:13px;color:#5E748B;font-weight:750}}
+.upgrade-price{{font-size:25px;color:#176BCE;font-weight:900;line-height:1.15;margin:4px 0}}
+.upgrade-note{{font-size:12px;color:#718398;line-height:1.35}}
+.free-usage-bar{{font-size:12.2px;color:#536A82;margin-top:4px;text-align:center}}
+@media(max-width:700px){{.upgrade-grid{{grid-template-columns:1fr}}}}
+
+/* Đăng nhập / đăng ký */
+div[data-testid="stDialog"] [data-testid="stDialogContent"]{{
+  border-radius:18px!important;border:1px solid #D7E6F5!important;box-shadow:0 22px 60px rgba(28,70,110,.18)!important;
+}}
+div[data-testid="stDialog"] [data-testid="stForm"]{{
+  border:0!important;background:#F8FBFF!important;border-radius:13px!important;padding:12px!important;
+}}
+div[data-testid="stDialog"] .stTextInput input{{
+  border:1px solid #C9DDF1!important;border-radius:10px!important;min-height:42px!important;
+}}
+div[data-testid="stDialog"] .stButton>button[kind="primary"],
+div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
+  background:linear-gradient(90deg,#206FC0,#4D9FEA)!important;border:0!important;color:white!important;
+  border-radius:10px!important;font-weight:850!important;min-height:43px!important;
+}}
+.auth-dialog-hero{{
+  display:flex;align-items:center;gap:11px;padding:12px 13px;margin:0 0 10px;
+  background:linear-gradient(120deg,#EAF4FF,#DCEEFF);border:1px solid #C9E0F5;border-radius:13px;
+}}
+.auth-dialog-hero.signup{{background:linear-gradient(120deg,#EDF8FF,#E6F2FF)}}
+.auth-dialog-icon{{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:#fff;font-size:22px;box-shadow:0 4px 12px rgba(36,105,181,.10)}}
+.auth-dialog-title{{font-size:17px;font-weight:900;color:#174A7B;line-height:1.15}}
+.auth-dialog-sub{{font-size:12.5px;color:#607B96;margin-top:3px}}
+.auth-or{{display:flex;align-items:center;gap:8px;color:#8292A3;font-size:12px;margin:10px 0 8px}}
+.auth-or:before,.auth-or:after{{content:"";height:1px;background:#D9E3EC;flex:1}}
+.google-auth-button{{
+  display:flex;align-items:center;justify-content:center;gap:9px;width:100%;min-height:43px;
+  border:1px solid #C9D8E7;border-radius:10px;background:#FFFFFF;color:#23384E!important;
+  font-size:14px;font-weight:800;text-decoration:none!important;box-shadow:0 2px 7px rgba(50,80,110,.05);
+}}
+.google-auth-button:hover{{background:#F7FAFD;border-color:#9FBFD9;text-decoration:none!important}}
+.google-g{{font-size:18px;font-weight:900;color:#4285F4}}
+.auth-security-note{{font-size:11.8px;color:#7B8B9C;text-align:center;margin-top:9px}}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Header / tài khoản nằm ngoài workspace để vẫn hoạt động ở chế độ xem.
+_head_left, _head_right = st.columns([7.6, 2.4], gap="medium", vertical_alignment="top")
+with _head_left:
+    st.markdown(
+        """
+        <div class="hero">
+          <div class="hero-row">
+            <div class="hero-icon">🧪</div>
+            <div>
+              <div class="hero-title">DTMIX Online</div>
+              <div class="hero-sub">Trộn đề trực tuyến • rà soát đáp án • xem trước đề gốc in ra</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+_AUTH_LOGGED_IN = _auth_logged_in()
+_AUTH_SUBSCRIPTION = st.session_state.get("auth_subscription") or {"plan": "FREE", "status": "active"}
+_AUTH_USAGE = st.session_state.get("auth_mix_usage") or {"successful_mixes": 0}
+_AUTH_CAN_USE, _AUTH_VIEW_REASON = _auth_access_reason()
+
+with _head_right:
+    if not _AUTH_LOGGED_IN:
+        with st.container(key="guest_auth_controls"):
+            _login_col, _signup_col = st.columns(2, gap="small")
+            with _login_col:
+                if st.button("Đăng nhập", key="top_login", type="primary", use_container_width=True):
+                    _login_dialog()
+            with _signup_col:
+                if st.button(
+                    "Đăng ký", key="top_signup", use_container_width=True,
+                    disabled=not _secret_bool("DTMIX_ALLOW_SIGNUP", True),
+                ):
+                    _signup_dialog()
+    else:
+        _auth_user = st.session_state.get("auth_user") or {}
+        _auth_meta = _auth_user.get("user_metadata") or {}
+        _auth_email = str(_auth_user.get("email") or "")
+        _auth_name = str(_auth_meta.get("full_name") or _auth_meta.get("name") or "").strip()
+        _auth_display = _auth_name or (_auth_email.split("@")[0] if _auth_email else "Tài khoản")
+        _auth_plan = _plan_label(_AUTH_SUBSCRIPTION)
+        _auth_plan_code = _plan_code(_AUTH_SUBSCRIPTION)
+        _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
+        _free_remaining = _free_mix_remaining(_AUTH_USAGE)
+        with st.container(key="account_controls"):
+            if hasattr(st, "popover"):
+                with st.popover(f"👤 {_auth_display}", use_container_width=True):
+                    st.markdown(
+                        f'<div class="account-compact"><div class="account-compact-name">{html.escape(_auth_display)}</div>'
+                        f'<div class="account-compact-email">{html.escape(_auth_email)}</div></div>'
+                        f'<div class="account-mini-grid">'
+                        f'<div class="account-mini-card"><div class="account-mini-label">Gói</div><div class="account-mini-value">{html.escape(_auth_plan)}</div></div>'
+                        f'<div class="account-mini-card"><div class="account-mini-label">Trạng thái</div><div class="account-mini-value">{html.escape(_auth_status_label)}</div></div>'
+                        f'</div>'
+                        f'<div class="account-expiry">Hạn sử dụng: {html.escape(_format_account_date(_AUTH_SUBSCRIPTION.get("expires_at")))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if _auth_plan_code == "FREE":
+                        st.caption(f"Lượt miễn phí: {_free_mix_used(_AUTH_USAGE)}/{FREE_MIX_LIMIT} đã dùng · còn {_free_remaining} lượt")
+                    if _AUTH_VIEW_REASON:
+                        st.warning(_AUTH_VIEW_REASON)
+                    if _auth_plan_code == "FREE":
+                        if st.button("💎 Nâng cấp gói", key="popover_upgrade", type="primary", use_container_width=True):
+                            _upgrade_dialog()
+                    st.divider()
+                    if st.button("↪ Đăng xuất", key="popover_logout", use_container_width=True):
+                        _logout()
+                        st.rerun()
+            else:
+                with st.expander(f"👤 {_auth_display}"):
+                    st.write(_auth_email)
+                    st.caption(f"Gói {_auth_plan} · {_auth_status_label}")
+                    if st.button("Đăng xuất", key="fallback_logout", use_container_width=True):
+                        _logout()
+                        st.rerun()
+        if _auth_plan_code == "FREE":
+            _under_text = f"gói free · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
+        else:
+            _under_text = f"gói {_auth_plan.lower()} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
+        st.markdown(
+            f'<div class="auth-plan-under">{html.escape(_under_text)}</div>',
+            unsafe_allow_html=True,
+        )
+
+# Fallback cho Streamlit cũ không có dialog.
+_inline_auth = st.session_state.get("auth_inline_panel")
+if _inline_auth in {"login", "signup", "upgrade"}:
+    with st.container(border=True):
+        if _inline_auth == "login":
+            _login_form_body()
+        elif _inline_auth == "signup":
+            _signup_form_body()
+        else:
+            _upgrade_body()
+        if st.button("Đóng", key="close_inline_auth"):
+            st.session_state.pop("auth_inline_panel", None)
+            st.rerun()
+
+_oauth_error = st.session_state.pop("auth_oauth_error", "")
+if _oauth_error:
+    st.error(f"Đăng nhập Google chưa hoàn tất: {_oauth_error}")
+
+if st.session_state.pop("auth_just_logged_in", False) and _AUTH_LOGGED_IN:
+    _flash_plan = _plan_label(_AUTH_SUBSCRIPTION)
+    _flash_status, _ = _subscription_status(_AUTH_SUBSCRIPTION)
+    if hasattr(st, "toast"):
+        st.toast(f"Đăng nhập thành công • Gói {_flash_plan}", icon="✅")
+    else:
+        st.success(f"Đăng nhập thành công • Gói {_flash_plan}")
+
+if st.session_state.pop("auth_just_logged_out", False):
+    if hasattr(st, "toast"):
+        st.toast("Đã đăng xuất. DTMIX chuyển sang chế độ xem.", icon="👁️")
+
+if not _AUTH_LOGGED_IN:
+    st.markdown(
+        '<div class="view-only-banner">👁 <b>Bạn đang ở chế độ xem.</b> Đăng nhập để tải đề, phân tích, cấu hình và xuất mã đề.</div>',
+        unsafe_allow_html=True,
+    )
+elif not _AUTH_CAN_USE:
+    st.markdown(
+        f'<div class="view-only-banner">🔒 <b>Tài khoản đang ở chế độ xem.</b> {html.escape(_AUTH_VIEW_REASON or "Gói sử dụng chưa hoạt động.")}</div>',
+        unsafe_allow_html=True,
+    )
+    if _plan_code(_AUTH_SUBSCRIPTION) == "FREE" and _free_mix_remaining(_AUTH_USAGE) <= 0:
+        _up1, _up2, _up3 = st.columns([1, 1.4, 1])
+        with _up2:
+            if st.button("💎 Nâng cấp: 1 năm 50.000đ · 2 năm 100.000đ", type="primary", use_container_width=True, key="quota_upgrade"):
+                _upgrade_dialog()
+
+# Khóa tương tác trong toàn bộ workspace khi khách chưa có quyền sử dụng.
+if not _AUTH_CAN_USE:
+    st.markdown(
+        """
+        <style>
+        .st-key-dtmix_workspace [data-testid="stButton"] button,
+        .st-key-dtmix_workspace [data-testid="stDownloadButton"] button,
+        .st-key-dtmix_workspace [data-testid="stTextInput"] input,
+        .st-key-dtmix_workspace [data-testid="stNumberInput"] input,
+        .st-key-dtmix_workspace [data-testid="stSelectbox"],
+        .st-key-dtmix_workspace [data-testid="stRadio"] label,
+        .st-key-dtmix_workspace [data-testid="stCheckbox"] label,
+        .st-key-dtmix_workspace [data-testid="stToggle"] label,
+        .st-key-dtmix_workspace [data-testid="stFileUploaderDropzone"]{
+          pointer-events:none!important;
+          opacity:.62!important;
+          filter:saturate(.72);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ============================================================
+# STATE / HELPERS
+# ============================================================
+DEFAULT_HEADER = {
+    "so": "SỞ GIÁO DỤC VÀ ĐÀO TẠO THÀNH PHỐ HỒ CHÍ MINH",
+    "truong": "TRƯỜNG THPT DƯƠNG BẠCH MAI",
+    "kythi": "KIỂM TRA HỌC KỲ II",
+    "namhoc": "NĂM HỌC 2026 - 2027",
+    "monthi": "Môn: HÓA HỌC",
+    "thoigian": "Thời gian làm bài: 45 phút",
+}
+for _k, _v in DEFAULT_HEADER.items():
+    st.session_state.setdefault(f"hdr_{_k}", _v)
+
+# Nâng năm học mặc định của các phiên cũ lên 2026 - 2027.
+if st.session_state.get("hdr_namhoc") in {
+    "NĂM HỌC 2025 - 2026",
+    "NĂM HỌC 2025-2026",
+    "2025 - 2026",
+    "2025-2026",
+}:
+    st.session_state["hdr_namhoc"] = "NĂM HỌC 2026 - 2027"
+
+
+def sec(n: int, title: str, subtitle: str) -> None:
+    st.markdown(
+        f'<div class="sec"><div class="sec-no">{n}</div><div>'
+        f'<div class="sec-title">{title}</div><div class="sec-sub">{subtitle}</div></div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def header_values() -> dict[str, str]:
+    return {k: st.session_state.get(f"hdr_{k}", v) for k, v in DEFAULT_HEADER.items()}
+
+
+def clear_engine() -> None:
+    old = st.session_state.pop("dtmix_engine", None)
+    if old:
+        try:
+            old.close()
+        except Exception:
+            pass
+    st.session_state.pop("dtmix_signature", None)
+    st.session_state.pop("mix_result", None)
+
+
+
+
+def _question_number_from_text(raw_text: str, fallback: int) -> int:
+    m = re.search(r"(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)", raw_text or "")
+    return int(m.group(1)) if m else int(fallback)
+
+
+def _normalize_question_anchor(text_value: str) -> str:
+    """Chuẩn hóa phần đầu câu hỏi để ghép đúng câu trong DOCX."""
+    s = (text_value or "").replace("\uFFFC", " ")
+    s = re.sub(r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\s*[\.\:\)]*\s*", "", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    # 120 ký tự đủ phân biệt các câu nhưng không quá nhạy với công thức/ảnh.
+    return s[:120]
+
+
+def _answer_format_evidence(answer: dict) -> int:
+    """
+    Điểm bằng chứng định dạng trong CHÍNH phương án:
+    - màu đỏ có trọng số cao;
+    - gạch chân tính theo số ký tự.
+    Chỉ dùng làm fallback khi parser trả 0 hoặc >1 đáp án ở Phần I.
+    """
+    red_score = 0
+    underline_score = 0
+    for elm in answer.get("elements", []):
+        try:
+            runs = elm.iter(qn("w:r"))
+        except Exception:
+            continue
+        for run in runs:
+            txt = "".join((t.text or "") for t in run.iter(qn("w:t")))
+            weight = max(1, len(txt.strip()))
+            rpr = run.find(qn("w:rPr"))
+            if rpr is None:
+                continue
+
+            u = rpr.find(qn("w:u"))
+            if u is not None:
+                uval = (u.get(qn("w:val")) or "single").lower()
+                if uval not in ("none", "0", "false"):
+                    underline_score += weight
+
+            color = rpr.find(qn("w:color"))
+            if color is not None:
+                cval = (color.get(qn("w:val")) or "").replace("#", "").upper()
+                if len(cval) == 6:
+                    try:
+                        rr = int(cval[0:2], 16)
+                        gg = int(cval[2:4], 16)
+                        bb = int(cval[4:6], 16)
+                        if rr > 150 and gg < 130 and bb < 130:
+                            red_score += weight
+                    except Exception:
+                        pass
+
+    return red_score * 4 + underline_score
+
+
+def _correct_letters_for_preview(answers: list, q_type: int) -> list[str]:
+    """
+    Chọn đáp án cho PREVIEW.
+    - Phần I: bắt buộc tối đa 1 phương án đỏ.
+    - Phần II: có thể nhiều mệnh đề đúng.
+    - Không tự suy diễn nếu dữ liệu mơ hồ; thà không tô hơn tô sai.
+    """
+    letters = "ABCDEFG"
+    parser_true = [
+        letters[i]
+        for i, ans in enumerate(answers[:len(letters)])
+        if ans.get("is_true")
+    ]
+
+    if q_type != 1:
+        return parser_true
+
+    # Trắc nghiệm nhiều lựa chọn: nếu parser đã xác định duy nhất 1 đáp án, dùng luôn.
+    if len(parser_true) == 1:
+        return parser_true
+
+    # Parser trả 0 hoặc nhiều đáp án: dùng bằng chứng định dạng trong từng phương án.
+    scores = [_answer_format_evidence(ans) for ans in answers[:len(letters)]]
+    if not scores:
+        return []
+
+    best = max(scores)
+    if best <= 0:
+        return []
+
+    winners = [i for i, score in enumerate(scores) if score == best]
+
+    # Chỉ tô khi có một phương án nổi bật duy nhất.
+    if len(winners) == 1:
+        return [letters[winners[0]]]
+
+    # Nếu đồng điểm nhưng parser có đúng 1 phương án nằm trong nhóm đồng điểm, dùng nó.
+    if len(parser_true) == 1:
+        idx = letters.index(parser_true[0])
+        if idx in winners:
+            return parser_true
+
+    # Mơ hồ => không tô đỏ để tránh tô sai.
+    return []
+
+
+def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
+    """
+    Bản đồ câu/đáp án dùng riêng cho xem trước.
+    Mỗi câu có anchor nội dung để DOCX preview ghép đúng câu, tránh nhầm khi
+    số câu lặp lại giữa PHẦN I / II / III.
+    """
+    spec = {"youngmix": bool(engine.youngmix), "parts": [], "groups": []}
+
+    if not engine.youngmix:
+        for p_idx, part in enumerate(engine.app.parsed_data.get("parts", [])):
+            p_type = int(part.get("type", 1))
+            q_seq = 0
+            questions = []
+            for muc in part.get("mucs", []):
+                for q in muc.get("questions", []):
+                    if q.get("is_virtual"):
+                        continue
+                    q_seq += 1
+                    raw = q.get("raw_text", "")
+                    answers = q.get("answers", [])
+                    questions.append({
+                        "number": _question_number_from_text(raw, q_seq),
+                        "anchor": _normalize_question_anchor(raw),
+                        "correct_letters": _correct_letters_for_preview(answers, p_type),
+                        "q_type": p_type,
+                        "short_answer": extract_short_answer(engine, q) if p_type == 3 else "",
+                    })
+            spec["parts"].append({
+                "p_idx": p_idx,
+                "type": p_type,
+                "questions": questions,
+            })
+    else:
+        all_mucs = [
+            m
+            for p in engine.app.parsed_data.get("parts", [])
+            for m in p.get("mucs", [])
+        ]
+        for g_idx, muc in enumerate(all_mucs):
+            q_seq = 0
+            questions = []
+            for q in muc.get("questions", []):
+                if q.get("is_virtual"):
+                    continue
+                q_seq += 1
+                q_type = int(q.get("ym_type", 1) or 1)
+                raw = q.get("raw_text", "")
+                answers = q.get("answers", [])
+                questions.append({
+                    "number": _question_number_from_text(raw, q_seq),
+                    "anchor": _normalize_question_anchor(raw),
+                    "correct_letters": _correct_letters_for_preview(answers, q_type),
+                    "q_type": q_type,
+                    "short_answer": extract_short_answer(engine, q) if q_type == 3 else "",
+                })
+            spec["groups"].append({
+                "g_idx": g_idx,
+                "questions": questions,
+            })
+    return spec
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_json: str = "") -> tuple[bytes, dict]:
+    """
+    Tạo DOCX CHỈ phục vụ preview.
+    Điểm quan trọng: đáp án đỏ lấy từ parsed_data của DTMIX, không tô theo heuristic
+    "đoạn nào có chữ đỏ/gạch chân thì cả phương án đỏ" như các bản trước.
+    """
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    XML = "http://www.w3.org/XML/1998/namespace"
+    NS = {"w": W}
+    stats = {"converted_wmf_emf": 0, "wmf_emf_total": 0, "answer_marks": 0}
+    try:
+        spec = json.loads(annotation_json) if annotation_json else {"youngmix": False, "parts": [], "groups": []}
+    except Exception:
+        spec = {"youngmix": False, "parts": [], "groups": []}
+
+    def _run_text(run):
+        return "".join((t.text or "") for t in run.xpath(".//w:t", namespaces=NS))
+
+    def _ensure_rpr(run):
+        rpr = run.find(f"{{{W}}}rPr")
+        if rpr is None:
+            rpr = etree.Element(f"{{{W}}}rPr")
+            run.insert(0, rpr)
+        return rpr
+
+    def _set_color(run, value):
+        rpr = _ensure_rpr(run)
+        color = rpr.find(f"{{{W}}}color")
+        if color is None:
+            color = etree.SubElement(rpr, f"{{{W}}}color")
+        color.set(f"{{{W}}}val", value)
+        for attr in ("themeColor", "themeTint", "themeShade"):
+            color.attrib.pop(f"{{{W}}}{attr}", None)
+
+    def _neutralize_existing_red(root):
+        # Preview theo quy ước mới: chỉ đáp án DTMIX nhận diện được phép màu đỏ.
+        for color in root.xpath('.//w:rPr/w:color', namespaces=NS):
+            val = (color.get(f"{{{W}}}val") or "").replace("#", "").upper()
+            if len(val) == 6:
+                try:
+                    rr, gg, bb = int(val[:2],16), int(val[2:4],16), int(val[4:],16)
+                    if rr > 150 and gg < 130 and bb < 130:
+                        color.set(f"{{{W}}}val", "000000")
+                        for attr in ("themeColor", "themeTint", "themeShade"):
+                            color.attrib.pop(f"{{{W}}}{attr}", None)
+                except Exception:
+                    pass
+
+    def _simple_text_run(run):
+        # Chỉ split run thuần text; run có drawing/object/math thì giữ nguyên để tránh hỏng công thức/ảnh.
+        allowed = {f"{{{W}}}rPr", f"{{{W}}}t"}
+        return all(ch.tag in allowed for ch in list(run)) and bool(run.xpath('./w:t', namespaces=NS))
+
+    def _clone_text_run(run, txt, color=None):
+        nr = copy.deepcopy(run)
+        for t in nr.xpath('.//w:t', namespaces=NS):
+            parent = t.getparent()
+            parent.remove(t)
+        nt = etree.Element(f"{{{W}}}t")
+        if txt.startswith(' ') or txt.endswith(' '):
+            nt.set(f"{{{XML}}}space", "preserve")
+        nt.text = txt
+        nr.append(nt)
+        if color:
+            _set_color(nr, color)
+        return nr
+
+    def _apply_option_intervals(p, infos, intervals):
+        # intervals: [(start,end,'FF0000'/'000000')]. Xử lý một lần để không tô cả run
+        # khi nhiều phương án A/B/C/D cùng nằm chung một run Word.
+        for run, rs, re_, txt in list(infos):
+            hits = []
+            for a,b,color in intervals:
+                if b > rs and a < re_:
+                    hits.append((max(a,rs)-rs, min(b,re_)-rs, color))
+            if not hits:
+                continue
+            if not _simple_text_run(run):
+                # Nếu run phức tạp nhưng nằm trọn trong một phương án, đổi màu được an toàn.
+                full = [h for h in hits if h[0] <= 0 and h[1] >= len(txt)]
+                if full:
+                    _set_color(run, full[-1][2])
+                continue
+            bounds = {0, len(txt)}
+            for a,b,_ in hits:
+                bounds.add(max(0,a)); bounds.add(min(len(txt),b))
+            bounds = sorted(bounds)
+            parent = run.getparent()
+            if parent is None:
+                continue
+            pos = parent.index(run)
+            pieces = []
+            for i in range(len(bounds)-1):
+                a,b = bounds[i], bounds[i+1]
+                if b <= a: continue
+                piece = txt[a:b]
+                color = None
+                mid = (a+b)/2
+                for ia,ib,ic in hits:
+                    if ia <= mid < ib:
+                        color = ic
+                pieces.append(_clone_text_run(run, piece, color))
+            for off,nr in enumerate(pieces):
+                parent.insert(pos+off, nr)
+            parent.remove(run)
+
+    def _normalize_preview_anchor(text_value):
+        s = (text_value or "").replace("\uFFFC", " ")
+        s = re.sub(r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\s*[\.\:\)]*\s*", "", s)
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s[:120]
+
+    def _all_question_specs(mode):
+        units = spec.get("groups" if mode == "ym" else "parts", [])
+        flat = []
+        for unit_idx, unit in enumerate(units):
+            for seq_idx, q in enumerate(unit.get("questions", [])):
+                item = dict(q)
+                item["_unit_idx"] = unit_idx
+                item["_seq_idx"] = seq_idx
+                flat.append(item)
+        return flat
+
+    def _lookup_question_by_anchor(mode, unit_idx, seq_idx, paragraph_text, used_keys):
+        """
+        Ưu tiên ghép bằng chính nội dung câu hỏi, sau đó mới fallback theo thứ tự.
+        Điều này loại lỗi lấy nhầm đáp án của câu khác/phần khác.
+        """
+        p_anchor = _normalize_preview_anchor(paragraph_text)
+        candidates = _all_question_specs(mode)
+
+        # Ưu tiên đúng unit trước.
+        ordered = [q for q in candidates if q["_unit_idx"] == unit_idx]
+        ordered += [q for q in candidates if q["_unit_idx"] != unit_idx]
+
+        best = None
+        best_score = -1
+
+        for q in ordered:
+            key = (q["_unit_idx"], q["_seq_idx"])
+            if key in used_keys:
+                continue
+            anchor = q.get("anchor", "")
+            if not anchor or not p_anchor:
+                continue
+
+            # exact prefix / containment rất đáng tin vì raw_text được lấy từ cùng DOCX.
+            if p_anchor.startswith(anchor[:60]) or anchor.startswith(p_anchor[:60]):
+                score = 1000 + min(len(anchor), len(p_anchor))
+            elif anchor[:45] and anchor[:45] in p_anchor:
+                score = 900 + len(anchor[:45])
+            else:
+                # điểm giao nhau theo token, chỉ dùng để hỗ trợ.
+                at = set(re.findall(r"\w+", anchor))
+                pt = set(re.findall(r"\w+", p_anchor))
+                score = int(100 * len(at & pt) / max(1, len(at | pt)))
+
+            if score > best_score:
+                best_score = score
+                best = q
+
+        # Chỉ nhận fuzzy nếu khá chắc.
+        if best is not None and best_score >= 55:
+            return best
+
+        # Fallback đúng unit + đúng thứ tự.
+        units = spec.get("groups" if mode == "ym" else "parts", [])
+        if units:
+            unit_idx = max(0, min(unit_idx, len(units) - 1))
+            qs = units[unit_idx].get("questions", [])
+            if 0 <= seq_idx < len(qs):
+                item = dict(qs[seq_idx])
+                item["_unit_idx"] = unit_idx
+                item["_seq_idx"] = seq_idx
+                return item
+        return None
+
+    def _annotate_document_xml(xml_bytes):
+        """
+        Quy tắc tô đỏ preview:
+        1) Xóa màu đỏ cũ khỏi bản preview.
+        2) Đi qua câu hỏi theo đúng THỨ TỰ xuất hiện trong DOCX.
+        3) Với mỗi câu, chỉ lấy đáp án từ parsed_data của DTMIX.
+        4) Chỉ phương án đúng được tô đỏ; các phương án còn lại ép về đen.
+        """
+        try:
+            root = etree.fromstring(xml_bytes)
+        except Exception:
+            return xml_bytes
+
+        _neutralize_existing_red(root)
+
+        mode = "ym" if spec.get("youngmix") else "std"
+        units = spec.get("groups" if mode == "ym" else "parts", [])
+        current_unit = 0
+        question_seq = -1
+        current_question = None
+        seen_ym_tag = False
+        used_question_keys = set()
+        roman_map = {"I": 0, "II": 1, "III": 2, "IV": 3}
+
+        # Chỉ coi là câu hỏi khi "Câu n" nằm ở ĐẦU đoạn.
+        # Nhờ vậy câu mô tả kiểu "trả lời từ câu 1 đến câu 12" không bị hiểu nhầm.
+        question_heading_re = re.compile(
+            r"(?i)^\s*#?\s*(?:Câu|Question)\s*\d+\b"
+        )
+
+        for p in root.xpath('.//w:p', namespaces=NS):
+            runs = p.xpath('./w:r', namespaces=NS)
+            infos = []
+            pos = 0
+            for run in runs:
+                txt = _run_text(run)
+                if txt:
+                    infos.append((run, pos, pos + len(txt), txt))
+                    pos += len(txt)
+
+            full = ''.join(x[3] for x in infos)
+            if not full.strip():
+                continue
+
+            # ----- Xác định phần/nhóm -----
+            if mode == "std":
+                pm = re.search(r'(?i)\bPHẦN\s+(IV|III|II|I)\b', full)
+                if pm:
+                    candidate = roman_map.get(pm.group(1).upper(), current_unit)
+                    if candidate < len(units):
+                        current_unit = candidate
+                        question_seq = -1
+                        current_question = None
+            else:
+                # Với YoungMix có tag thật: mỗi <g0>...<g4> mở một group mới.
+                # Với YoungMix "Tự động" không có tag: giữ nguyên 1 group và đi tuần tự toàn đề.
+                if re.search(r'(?i)<\s*#?g[0-4]\s*>', full):
+                    if seen_ym_tag:
+                        current_unit = min(current_unit + 1, max(0, len(units) - 1))
+                    else:
+                        seen_ym_tag = True
+                        current_unit = 0
+                    question_seq = -1
+                    current_question = None
+
+            # ----- Bắt đầu câu mới theo thứ tự xuất hiện -----
+            if question_heading_re.search(full):
+                question_seq += 1
+                current_question = _lookup_question_by_anchor(
+                    mode,
+                    current_unit,
+                    question_seq,
+                    full,
+                    used_question_keys,
+                )
+                if current_question:
+                    used_question_keys.add((
+                        current_question.get("_unit_idx", current_unit),
+                        current_question.get("_seq_idx", question_seq),
+                    ))
+
+            if not current_question:
+                continue
+
+            correct_list = list(current_question.get("correct_letters", []))
+            q_type_now = int(current_question.get("q_type", 0) or 0)
+
+            # PHẦN I là trắc nghiệm một lựa chọn: preview không bao giờ được tô >1 đáp án.
+            if q_type_now == 1 and len(correct_list) > 1:
+                correct_list = []
+            correct = set(correct_list)
+
+            # ----- Trắc nghiệm / Đúng-Sai -----
+            # Nhận cả A. B. C. D. và a) b) c) d), nhưng chỉ tô đỏ nếu parsed_data nói là đúng.
+            marks = list(
+                re.finditer(
+                    r'(?i)(?:^|[\s\u00A0\u200B\uFFFC])#?([A-G])[\.\)]',
+                    full,
+                )
+            )
+            if marks:
+                intervals = []
+                for i, m in enumerate(marks):
+                    seg_start = m.start(1)
+                    seg_end = marks[i + 1].start(1) if i + 1 < len(marks) else len(full)
+                    letter = m.group(1).upper()
+                    is_correct = letter in correct
+                    intervals.append(
+                        (seg_start, seg_end, 'FF0000' if is_correct else '000000')
+                    )
+                    if is_correct:
+                        stats['answer_marks'] += 1
+
+                _apply_option_intervals(p, infos, intervals)
+                continue
+
+            # ----- Trả lời ngắn -----
+            if int(current_question.get('q_type', 0) or 0) == 3:
+                # Chỉ tô chính đoạn đáp án, không tô các dòng khác của câu.
+                if re.search(r'(?i)^\s*Đáp\s*án\s*[:\.]', full):
+                    for run, *_ in infos:
+                        _set_color(run, 'FF0000')
+                    stats['answer_marks'] += 1
+                elif re.search(r'(?i)^\s*A\.\s*[-+]?\d', full):
+                    for run, *_ in infos:
+                        _set_color(run, 'FF0000')
+                    stats['answer_marks'] += 1
+
+        return etree.tostring(
+            root,
+            xml_declaration=True,
+            encoding='UTF-8',
+            standalone='yes',
+        )
+
+    try:
+        zin=zipfile.ZipFile(io.BytesIO(file_bytes),'r')
+        infos_zip=zin.infolist()
+        entries={info.filename: zin.read(info.filename) for info in infos_zip}
+        zin.close()
+        if 'word/document.xml' in entries:
+            entries['word/document.xml']=_annotate_document_xml(entries['word/document.xml'])
+
+        legacy=[n for n in entries if n.lower().startswith('word/media/') and n.lower().endswith(('.wmf','.emf'))]
+        stats['wmf_emf_total']=len(legacy)
+        converter=shutil.which('magick') or shutil.which('convert')
+        if legacy and converter:
+            temp_root=Path(tempfile.mkdtemp(prefix='dtmix_vec_'))
+            try:
+                for idx,name in enumerate(legacy):
+                    ext=Path(name).suffix.lower(); srcf=temp_root/f'source_{idx}{ext}'; dstf=temp_root/f'result_{idx}.png'
+                    srcf.write_bytes(entries[name])
+                    try:
+                        subprocess.run([converter,str(srcf),str(dstf)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20)
+                        if dstf.exists() and dstf.stat().st_size>32:
+                            entries[name]=dstf.read_bytes(); stats['converted_wmf_emf']+=1
+                    except Exception:
+                        pass
+            finally:
+                shutil.rmtree(temp_root,ignore_errors=True)
+            if stats['converted_wmf_emf'] and '[Content_Types].xml' in entries:
+                try:
+                    ct=etree.fromstring(entries['[Content_Types].xml'])
+                    for node in ct:
+                        if (node.get('Extension') or '').lower() in ('wmf','emf'):
+                            node.set('ContentType','image/png')
+                    entries['[Content_Types].xml']=etree.tostring(ct,xml_declaration=True,encoding='UTF-8',standalone='yes')
+                except Exception: pass
+
+        out_io=io.BytesIO()
+        with zipfile.ZipFile(out_io,'w',zipfile.ZIP_DEFLATED) as zout:
+            seen=set()
+            for info in infos_zip:
+                if info.filename in entries:
+                    zout.writestr(info,entries[info.filename]); seen.add(info.filename)
+            for name,data in entries.items():
+                if name not in seen: zout.writestr(name,data)
+        return out_io.getvalue(), stats
+    except Exception:
+        return file_bytes, stats
+
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _build_exact_export_goc_preview(
+    file_bytes: bytes,
+    filename: str,
+    youngmix: bool,
+    header_json: str,
+) -> tuple[bytes, str]:
+    """
+    Tạo đúng De_Ma_GOC.docx bằng chính thuật toán xuất đề DTMIX.
+    Đây là nguồn chuẩn cho preview vì legacy export tô đỏ trực tiếp các
+    phương án có ans['is_true'] == True, đúng cùng dữ liệu dùng khi xuất đáp án.
+    """
+    temp_engine = None
+    try:
+        header = json.loads(header_json) if header_json else {}
+        temp_engine = DTMIXWebEngine(
+            file_bytes,
+            filename,
+            youngmix=bool(youngmix),
+            header=header,
+        )
+        result = temp_engine.mix(["111"])
+        goc_path = Path(result.output_dir) / "De_Ma_GOC.docx"
+        if not goc_path.exists():
+            return file_bytes, "Không tìm thấy De_Ma_GOC.docx."
+        return goc_path.read_bytes(), ""
+    except Exception as exc:
+        return file_bytes, f"Lỗi tạo De_Ma_GOC: {exc}"
+    finally:
+        if temp_engine is not None:
+            try:
+                temp_engine.close()
+            except Exception:
+                pass
+
+
+def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 920) -> None:
+    """
+    Trình xem DOCX chạy trực tiếp trong trình duyệt bằng docx-preview 0.4.0.
+    Ưu điểm:
+      • Không phụ thuộc LibreOffice trên máy chủ.
+      • Hỗ trợ ảnh, bảng, header/footer và Office Math (OMML).
+      • Dùng toàn bộ chiều rộng vùng preview ~70%.
+    Với MathType/OLE legacy dạng WMF/EMF, DTMIX thử chuyển sang PNG nếu máy chủ có ImageMagick.
+    """
+    # Xem trước dùng đúng De_Ma_GOC.docx do thuật toán DTMIX xuất.
+    # Không còn tự map A/B/C/D bằng giao diện, nên đáp án đỏ khớp file xuất thực tế.
+    header_json = json.dumps(header_values(), ensure_ascii=False, sort_keys=True)
+    preview_bytes, preview_error = _build_exact_export_goc_preview(
+        engine.file_bytes,
+        engine.filename,
+        engine.youngmix,
+        header_json,
+    )
+    b64 = base64.b64encode(preview_bytes).decode("ascii")
+    js_data = json.dumps(b64)
+    conversion_note = " • nguồn: De_Ma_GOC do DTMIX xuất"
+    if preview_error:
+        conversion_note += " • " + preview_error
+
+    html_doc = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx-preview@0.4.0/dist/docx-preview.min.js"></script>
+<style>
+  *{{box-sizing:border-box}}
+  html,body{{margin:0;background:#F3F7FC;color:#1F3147;font-family:Inter,Segoe UI,Arial,sans-serif}}
+  .topbar{{
+    position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;
+    gap:10px;background:rgba(255,255,255,.96);border-bottom:1px solid #DCE7F3;padding:9px 12px;
+    box-shadow:0 3px 12px rgba(38,75,114,.06)
+  }}
+  .status{{font-size:13px;font-weight:750;color:#176BCE}}
+  .tools{{display:flex;gap:7px;align-items:center}}
+  button{{border:1px solid #CFE0F1;background:#fff;color:#244B76;border-radius:8px;padding:6px 9px;font-weight:750;cursor:pointer}}
+  button:hover{{background:#EEF6FF}}
+  #wrap{{padding:14px;overflow:auto;min-height:{height-46}px}}
+  #doc{{transform-origin:top center;transition:transform .12s ease}}
+  .docx-wrapper{{background:#EDF3FA!important;padding:16px!important}}
+  .docx-wrapper>section.docx{{
+    margin:0 auto 18px!important;box-shadow:0 6px 22px rgba(26,60,96,.13)!important;
+    border:1px solid #D9E3EE!important;background:white!important
+  }}
+  math{{font-family:"Cambria Math","STIX Two Math","Times New Roman",serif!important}}
+  img{{max-width:100%!important}}
+  .err{{margin:20px;padding:14px;border:1px solid #F0C9CE;background:#FFF2F3;color:#A43B48;border-radius:10px}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="status" id="status">Đang dựng đề Word trong trình duyệt…{conversion_note}</div>
+  <div class="tools">
+    <button onclick="zoomOut()">−</button>
+    <button id="zoomLabel" onclick="resetZoom()">100%</button>
+    <button onclick="zoomIn()">+</button>
+    <button onclick="fitWidth()">Vừa khung</button>
+  </div>
+</div>
+<div id="wrap"><div id="doc"></div></div>
+<script>
+let scale=1;
+const data64={js_data};
+function bytesFromBase64(b64){{
+  const bin=atob(b64); const arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}}
+function applyZoom(){{
+  document.getElementById('doc').style.zoom=scale;
+  document.getElementById('zoomLabel').textContent=Math.round(scale*100)+'%';
+}}
+function zoomIn(){{scale=Math.min(1.4,scale+.1);applyZoom()}}
+function zoomOut(){{scale=Math.max(.6,scale-.1);applyZoom()}}
+function resetZoom(){{scale=1;applyZoom()}}
+function fitWidth(){{
+  const wrap=document.getElementById('wrap');
+  const page=document.querySelector('section.docx');
+  if(!page) return;
+  const w=page.getBoundingClientRect().width/scale;
+  scale=Math.min(1,(wrap.clientWidth-38)/w);
+  applyZoom();
+}}
+(async()=>{{
+ try{{
+   if(!window.docx || !window.docx.renderAsync) throw new Error('Không tải được thư viện docx-preview.');
+   const data=bytesFromBase64(data64);
+   await window.docx.renderAsync(data, document.getElementById('doc'), null, {{
+      inWrapper:true,
+      ignoreWidth:false,
+      ignoreHeight:false,
+      ignoreFonts:false,
+      breakPages:true,
+      debug:false,
+      experimental:true,
+      renderHeaders:true,
+      renderFooters:true,
+      renderFootnotes:true,
+      renderEndnotes:true,
+      useBase64URL:true,
+      ignoreLastRenderedPageBreak:false
+   }});
+   document.getElementById('status').textContent='✓ De_Ma_GOC: đáp án đỏ theo đúng thuật toán xuất DTMIX{conversion_note}';
+   setTimeout(fitWidth,250);
+ }}catch(e){{
+   document.getElementById('status').textContent='Không dựng được DOCX trực tiếp.';
+   document.getElementById('doc').innerHTML='<div class="err"><b>Lỗi xem trước:</b> '+String(e)+'</div>';
+ }}
+}})();
+</script>
+</body>
+</html>
+"""
+    components.html(html_doc, height=height, scrolling=True)
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def _docx_to_pdf_bytes(file_bytes: bytes, signature: str) -> tuple[bytes | None, str | None]:
+    """Chuyển DOCX -> PDF bằng LibreOffice để giữ công thức, WMF/OLE, ảnh và bố cục."""
+    office = shutil.which("libreoffice") or shutil.which("soffice")
+    if not office:
+        return None, "Máy chủ chưa có LibreOffice."
+    tmp = Path(tempfile.mkdtemp(prefix="dtmix_preview_"))
+    try:
+        src = tmp / "preview.docx"
+        src.write_bytes(file_bytes)
+        cmd = [office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp), str(src)]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=75)
+        pdf = tmp / "preview.pdf"
+        if not pdf.exists():
+            return None, (p.stdout or "Không tạo được PDF xem trước.").strip()
+        return pdf.read_bytes(), None
+    except subprocess.TimeoutExpired:
+        return None, "LibreOffice xử lý quá thời gian cho phép."
+    except Exception as exc:
+        return None, str(exc)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=24)
+def _pdf_page_png(pdf_bytes: bytes, page_index: int, zoom: float = 1.65) -> tuple[bytes | None, int, str | None]:
+    if fitz is None:
+        return None, 0, "Thiếu thư viện PyMuPDF."
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total = doc.page_count
+        if total <= 0:
+            return None, 0, "PDF không có trang."
+        page_index = max(0, min(page_index, total - 1))
+        page = doc.load_page(page_index)
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("png"), total, None
+    except Exception as exc:
+        return None, 0, str(exc)
+
+
+def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
+    """Preview ưu tiên độ trung thực: DOCX -> PDF -> ảnh trang."""
+    signature = hashlib.sha256(engine.file_bytes).hexdigest()
+    with st.spinner("Đang dựng bản xem trước Word chính xác..."):
+        # PDF cũng dựng từ đúng De_Ma_GOC.docx do DTMIX xuất.
+        header_json = json.dumps(header_values(), ensure_ascii=False, sort_keys=True)
+        goc_bytes, goc_error = _build_exact_export_goc_preview(
+            engine.file_bytes,
+            engine.filename,
+            engine.youngmix,
+            header_json,
+        )
+        pdf_bytes, err = _docx_to_pdf_bytes(
+            goc_bytes,
+            signature + "_dtmix_goc",
+        )
+        if goc_error and not err:
+            err = goc_error
+
+
+    if pdf_bytes:
+        # Lấy số trang nhẹ nhàng
+        _, total, err2 = _pdf_page_png(pdf_bytes, 0, 1.0)
+        if total:
+            st.session_state.setdefault(f"{key_prefix}_page", 1)
+            current = int(st.session_state.get(f"{key_prefix}_page", 1))
+            current = max(1, min(current, total))
+            st.session_state[f"{key_prefix}_page"] = current
+
+            a, b, c, d = st.columns([.72, 1.15, 1.15, 2.2])
+            if a.button("◀", key=f"{key_prefix}_prev", use_container_width=True, disabled=current <= 1):
+                st.session_state[f"{key_prefix}_page"] = current - 1
+                st.rerun()
+            page_no = b.selectbox(
+                "Trang",
+                list(range(1, total + 1)),
+                index=current - 1,
+                key=f"{key_prefix}_page_select",
+                label_visibility="collapsed",
+            )
+            if int(page_no) != current:
+                st.session_state[f"{key_prefix}_page"] = int(page_no)
+                st.rerun()
+            if c.button("▶", key=f"{key_prefix}_next", use_container_width=True, disabled=current >= total):
+                st.session_state[f"{key_prefix}_page"] = current + 1
+                st.rerun()
+            d.markdown(
+                f'<div class="preview-toolbar"><b>Trang {current}/{total}</b> · Dựng từ Word bằng LibreOffice nên hiển thị tốt công thức Toán/Hóa, ảnh, bảng, WMF/OLE.</div>',
+                unsafe_allow_html=True,
+            )
+            png, _, perr = _pdf_page_png(pdf_bytes, current - 1, 1.7)
+            if png:
+                st.image(png, use_container_width=True)
+                return
+            st.warning(f"Không dựng được ảnh trang: {perr}")
+
+    # Fallback khi môi trường chưa có LibreOffice/PyMuPDF
+    st.info("Chế độ PDF chưa sẵn sàng trên máy chủ. Hãy chọn “Xem trực tiếp DOCX” ở phía trên; chế độ đó không cần LibreOffice.")
+    if err:
+        st.caption(err)
+    show_rich_preview(rich_standard_part_html(engine, None, True), height=780)
+
+
+def _default_manual_codes(n: int) -> list[str]:
+    """Sinh đúng n mã mặc định, ổn định và dễ nhìn."""
+    return [str(111 * i) for i in range(1, n + 1)]
+
+
+def _normalize_manual_codes(raw: str, n: int) -> list[str]:
+    """
+    Luôn trả về ĐÚNG n mã.
+    - Giữ các mã người dùng đã nhập theo thứ tự.
+    - Nếu thiếu thì tự bổ sung mã chưa trùng.
+    - Nếu thừa thì cắt còn n.
+    """
+    codes = [x.strip() for x in re.split(r"[,;\n]+", raw or "") if x.strip()]
+    # loại trùng nhưng giữ thứ tự
+    unique = []
+    for c in codes:
+        if c not in unique:
+            unique.append(c)
+    codes = unique[:n]
+
+    # bổ sung nếu còn thiếu
+    candidate_pool = _default_manual_codes(max(n, 24))
+    next_seq = 101
+    while len(codes) < n:
+        candidate = candidate_pool[len(codes)] if len(codes) < len(candidate_pool) else str(next_seq)
+        while candidate in codes:
+            next_seq += 1
+            candidate = str(next_seq)
+        codes.append(candidate)
+        next_seq += 1
+    return codes
+
+
+def _sync_manual_code_count(prefix: str) -> None:
+    """
+    Callback chạy NGAY khi ô 'Số đề' thay đổi.
+    Nếu đang dùng mã thủ công, tự co/giãn danh sách mã về đúng số đề.
+    """
+    n = int(st.session_state.get(f"{prefix}_top_n", 4))
+    manual_key = f"{prefix}_top_manual"
+    current = st.session_state.get(manual_key, "")
+    st.session_state[manual_key] = ", ".join(_normalize_manual_codes(current, n))
+    st.session_state[f"{prefix}_last_n"] = n
+
+
+def compact_codes_ui(prefix: str) -> list[str]:
+    c1, c2 = st.columns([.8, 1.2], gap="small")
+
+    n = int(
+        c1.number_input(
+            "Số đề",
+            min_value=1,
+            max_value=24,
+            value=4,
+            step=1,
+            key=f"{prefix}_top_n",
+            on_change=_sync_manual_code_count,
+            args=(prefix,),
+        )
+    )
+
+    kind = c2.selectbox(
+        "Kiểu mã",
+        ["111, 222...", "Liên tiếp", "Thủ công"],
+        key=f"{prefix}_top_kind",
+    )
+
+    # Ghi nhớ số đề hiện tại để khi vừa chuyển sang "Thủ công" cũng đồng bộ ngay.
+    last_n_key = f"{prefix}_last_n"
+    manual_key = f"{prefix}_top_manual"
+    if st.session_state.get(last_n_key) != n:
+        # Chỉ sửa state trước khi widget manual được tạo.
+        st.session_state[manual_key] = ", ".join(
+            _normalize_manual_codes(st.session_state.get(manual_key, ""), n)
+        )
+        st.session_state[last_n_key] = n
+
+    if kind == "111, 222...":
+        codes = [str(111 * i) for i in range(1, n + 1)]
+        # Không dùng text_input disabled vì widget state có thể giữ giá trị cũ.
+        st.markdown(
+            f'<div class="codes-live"><b>{n} mã đề:</b> {esc(", ".join(codes))}</div>',
+            unsafe_allow_html=True,
+        )
+
+    elif kind == "Liên tiếp":
+        start_code = st.text_input("Mã đầu", "101", key=f"{prefix}_top_start")
+        if start_code.strip().isdigit():
+            first = int(start_code.strip())
+            width = len(start_code.strip())
+            codes = [str(first + i).zfill(width) for i in range(n)]
+            st.markdown(
+                f'<div class="codes-live"><b>{n} mã đề:</b> {esc(", ".join(codes))}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            codes = []
+            st.caption("⚠ Mã đầu phải là số.")
+
+    else:
+        # Bảo đảm state tồn tại và có đúng n mã trước khi tạo widget.
+        if manual_key not in st.session_state:
+            st.session_state[manual_key] = ", ".join(_default_manual_codes(n))
+        else:
+            normalized = _normalize_manual_codes(st.session_state[manual_key], n)
+            if len([x for x in re.split(r"[,;\n]+", st.session_state[manual_key]) if x.strip()]) != n:
+                st.session_state[manual_key] = ", ".join(normalized)
+
+        raw_codes = st.text_input(
+            "Mã đề",
+            key=manual_key,
+            help="Danh sách luôn được đồng bộ theo số đề. Có thể sửa từng mã nếu muốn.",
+        )
+        codes = _normalize_manual_codes(raw_codes, n)
+
+        # Nếu người dùng vừa sửa danh sách không đủ n mã, vẫn dùng đúng n mã và báo rõ.
+        entered = [x.strip() for x in re.split(r"[,;\n]+", raw_codes or "") if x.strip()]
+        if len(entered) != n:
+            st.caption(f"DTMIX sẽ dùng đúng {n} mã: " + ", ".join(codes))
+        else:
+            st.caption(f"✓ {n} mã đề")
+
+    return codes
+
+
+def esc(s: object) -> str:
+    return html.escape(str(s or ""))
+
+
+def element_text(engine: DTMIXWebEngine, elm) -> str:
+    try:
+        if elm.tag == qn("w:p"):
+            return engine.app._build_mapping(elm)[1]
+    except Exception:
+        pass
+    texts = []
+    try:
+        for t in elm.iter(qn("w:t")):
+            if t.text:
+                texts.append(t.text)
+    except Exception:
+        pass
+    return "".join(texts)
+
+
+def media_counts(elements) -> dict[str, int]:
+    counts = {"image": 0, "math": 0, "table": 0}
+    for elm in elements or []:
+        tag0 = str(getattr(elm, "tag", ""))
+        if tag0.endswith("}tbl"):
+            counts["table"] += 1
+        try:
+            for node in elm.iter():
+                tag = str(node.tag)
+                if tag.endswith("}drawing") or tag.endswith("}pict") or tag.endswith("}imagedata"):
+                    counts["image"] += 1
+                elif tag.endswith("}oMath") or tag.endswith("}oMathPara") or tag.endswith("}object") or tag.endswith("}OLEObject"):
+                    counts["math"] += 1
+        except Exception:
+            pass
+    return counts
+
+
+
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _local(el) -> str:
+    return str(getattr(el, "tag", "")).split("}")[-1]
+
+
+def _attr_local(el, local: str, default=""):
+    for k, v in getattr(el, "attrib", {}).items():
+        if str(k).split("}")[-1] == local:
+            return v
+    return default
+
+
+def _math_token_html(text: str) -> str:
+    if not text:
+        return ""
+    out = []
+    buf = ""
+    kind = None
+    def flush():
+        nonlocal buf, kind
+        if not buf:
+            return
+        safe = esc(buf)
+        if kind == "num": out.append(f"<mn>{safe}</mn>")
+        elif kind == "id": out.append(f"<mi>{safe}</mi>")
+        elif kind == "op": out.append(f"<mo>{safe}</mo>")
+        else: out.append(f"<mtext>{safe}</mtext>")
+        buf = ""; kind = None
+    ops = set("=+-−×÷·*/<>≤≥≈≠±∑∫∞→←↔()[]{}|,:;^")
+    for ch in text:
+        k = "num" if ch.isdigit() or (ch in ".," and kind == "num") else "id" if ch.isalpha() else "op" if ch in ops else "text"
+        if kind is None or k == kind:
+            buf += ch; kind = k
+        else:
+            flush(); buf = ch; kind = k
+    flush()
+    return "".join(out)
+
+
+def _omml_children(el) -> str:
+    return "".join(_omml_node(c) for c in el)
+
+
+def _first_child(el, name: str):
+    for c in el:
+        if _local(c) == name:
+            return c
+    return None
+
+
+def _omml_node(el) -> str:
+    name = _local(el)
+    if name in ("oMath", "oMathPara"):
+        return f'<span class="doc-math"><math xmlns="http://www.w3.org/1998/Math/MathML"><mrow>{_omml_children(el)}</mrow></math></span>'
+    if name == "t":
+        return _math_token_html(el.text or "")
+    if name == "r":
+        text = "".join((x.text or "") for x in el.iter() if _local(x) == "t")
+        return _math_token_html(text)
+    if name in ("e", "num", "den", "sup", "sub", "deg", "fName", "lim"):
+        return f"<mrow>{_omml_children(el)}</mrow>"
+    if name == "f":
+        num = _first_child(el, "num"); den = _first_child(el, "den")
+        return f"<mfrac>{_omml_node(num) if num is not None else '<mrow/>'}{_omml_node(den) if den is not None else '<mrow/>'}</mfrac>"
+    if name == "sSup":
+        e = _first_child(el, "e"); sup = _first_child(el, "sup")
+        return f"<msup>{_omml_node(e) if e is not None else '<mrow/>'}{_omml_node(sup) if sup is not None else '<mrow/>'}</msup>"
+    if name == "sSub":
+        e = _first_child(el, "e"); sub = _first_child(el, "sub")
+        return f"<msub>{_omml_node(e) if e is not None else '<mrow/>'}{_omml_node(sub) if sub is not None else '<mrow/>'}</msub>"
+    if name == "sSubSup":
+        e = _first_child(el, "e"); sub = _first_child(el, "sub"); sup = _first_child(el, "sup")
+        return f"<msubsup>{_omml_node(e) if e is not None else '<mrow/>'}{_omml_node(sub) if sub is not None else '<mrow/>'}{_omml_node(sup) if sup is not None else '<mrow/>'}</msubsup>"
+    if name == "rad":
+        e = _first_child(el, "e"); deg = _first_child(el, "deg")
+        ehtml = _omml_node(e) if e is not None else "<mrow/>"
+        dhtml = _omml_node(deg) if deg is not None else ""
+        plain_deg = "".join((x.text or "") for x in deg.iter() if _local(x) == "t").strip() if deg is not None else ""
+        return f"<mroot>{ehtml}{dhtml}</mroot>" if plain_deg else f"<msqrt>{ehtml}</msqrt>"
+    if name == "d":
+        e = _first_child(el, "e")
+        beg, end = "(", ")"
+        pr = _first_child(el, "dPr")
+        if pr is not None:
+            for x in pr:
+                if _local(x) == "begChr": beg = _attr_local(x, "val", beg)
+                if _local(x) == "endChr": end = _attr_local(x, "val", end)
+        return f'<mfenced open="{esc(beg)}" close="{esc(end)}">{_omml_node(e) if e is not None else "<mrow/>"}</mfenced>'
+    if name == "nary":
+        e = _first_child(el, "e"); sub = _first_child(el, "sub"); sup = _first_child(el, "sup")
+        op = "∫"
+        pr = _first_child(el, "naryPr")
+        if pr is not None:
+            for x in pr:
+                if _local(x) == "chr": op = _attr_local(x, "val", op)
+        base = f"<mo>{esc(op)}</mo>"
+        if sub is not None and sup is not None: ophtml = f"<munderover>{base}{_omml_node(sub)}{_omml_node(sup)}</munderover>"
+        elif sub is not None: ophtml = f"<munder>{base}{_omml_node(sub)}</munder>"
+        elif sup is not None: ophtml = f"<mover>{base}{_omml_node(sup)}</mover>"
+        else: ophtml = base
+        return f"<mrow>{ophtml}{_omml_node(e) if e is not None else ''}</mrow>"
+    if name == "m":
+        rows = []
+        for mr in el:
+            if _local(mr) != "mr": continue
+            cells = [f"<mtd>{_omml_node(c)}</mtd>" for c in mr if _local(c) == "e"]
+            rows.append("<mtr>" + "".join(cells) + "</mtr>")
+        return "<mtable>" + "".join(rows) + "</mtable>"
+    if name == "eqArr":
+        rows = [f"<mtr><mtd>{_omml_node(c)}</mtd></mtr>" for c in el if _local(c) == "e"]
+        return "<mtable>" + "".join(rows) + "</mtable>"
+    if name in ("limLow", "limUpp"):
+        e = _first_child(el, "e"); lim = _first_child(el, "lim")
+        tag = "munder" if name == "limLow" else "mover"
+        return f"<{tag}>{_omml_node(e) if e is not None else '<mrow/>'}{_omml_node(lim) if lim is not None else '<mrow/>'}</{tag}>"
+    if name == "func":
+        fn = _first_child(el, "fName"); e = _first_child(el, "e")
+        return f"<mrow>{_omml_node(fn) if fn is not None else ''}{_omml_node(e) if e is not None else ''}</mrow>"
+    if name == "acc":
+        e = _first_child(el, "e"); ch = "^"
+        pr = _first_child(el, "accPr")
+        if pr is not None:
+            for x in pr:
+                if _local(x) == "chr": ch = _attr_local(x, "val", ch)
+        return f"<mover accent='true'>{_omml_node(e) if e is not None else '<mrow/>'}<mo>{esc(ch)}</mo></mover>"
+    if name == "bar":
+        e = _first_child(el, "e")
+        return f"<mover accent='true'>{_omml_node(e) if e is not None else '<mrow/>'}<mo>¯</mo></mover>"
+    if name.endswith("Pr") or name in ("ctrlPr",):
+        return ""
+    return _omml_children(el)
+
+
+def _image_html(engine: DTMIXWebEngine, node) -> str:
+    rid = None
+    try:
+        for x in node.iter():
+            lname = _local(x)
+            if lname in ("blip", "imagedata"):
+                for k, v in x.attrib.items():
+                    an = str(k).split("}")[-1]
+                    if an in ("embed", "id"):
+                        rid = v; break
+            if rid: break
+        if not rid:
+            return ""
+        part = engine.app.global_doc.part.related_parts.get(rid)
+        if part is None or not hasattr(part, "blob"):
+            return ""
+        mime = getattr(part, "content_type", "image/png") or "image/png"
+        b64 = base64.b64encode(part.blob).decode("ascii")
+        return f'<div class="doc-img-wrap"><img class="doc-img" src="data:{esc(mime)};base64,{b64}"></div>'
+    except Exception:
+        return ""
+
+
+def _run_html(engine: DTMIXWebEngine, run_el) -> str:
+    style = []
+    rpr = _first_child(run_el, "rPr")
+    vert = None
+    if rpr is not None:
+        for x in rpr:
+            n = _local(x)
+            if n == "b": style.append("font-weight:700")
+            elif n == "i": style.append("font-style:italic")
+            elif n == "u": style.append("text-decoration:underline")
+            elif n == "color":
+                val = _attr_local(x, "val", "")
+                if val and val.lower() != "auto" and re.fullmatch(r"[0-9A-Fa-f]{6}", val): style.append(f"color:#{val}")
+            elif n == "vertAlign": vert = _attr_local(x, "val", "")
+    chunks = []
+    for c in run_el:
+        n = _local(c)
+        if n == "t": chunks.append(esc(c.text or ""))
+        elif n == "tab": chunks.append("&emsp;")
+        elif n in ("br", "cr"): chunks.append("<br>")
+        elif n in ("drawing", "pict", "object"):
+            chunks.append(_image_html(engine, c) or '<span class="media-chip">Đối tượng Word</span>')
+        elif n in ("oMath", "oMathPara"):
+            chunks.append(_omml_node(c))
+        elif n in ("AlternateContent", "Choice", "Fallback", "sdt", "smartTag"):
+            img = _image_html(engine, c)
+            if img:
+                chunks.append(img)
+            for sub in c.iter():
+                if sub is c: continue
+                if _local(sub) in ("oMath", "oMathPara"):
+                    chunks.append(_omml_node(sub))
+    inner = "".join(chunks)
+    if not inner: return ""
+    if vert == "subscript": inner = f"<sub>{inner}</sub>"
+    elif vert == "superscript": inner = f"<sup>{inner}</sup>"
+    return f'<span style="{";".join(style)}">{inner}</span>' if style else inner
+
+
+def _paragraph_html(engine: DTMIXWebEngine, p_el) -> str:
+    align = ""
+    ppr = _first_child(p_el, "pPr")
+    if ppr is not None:
+        jc = _first_child(ppr, "jc")
+        if jc is not None:
+            val = _attr_local(jc, "val", "")
+            if val in ("center", "right", "both", "justify"):
+                align = "justify" if val in ("both", "justify") else val
+    out = []
+    def walk(parent):
+        for c in parent:
+            n = _local(c)
+            if n == "r": out.append(_run_html(engine, c))
+            elif n in ("oMath", "oMathPara"): out.append(_omml_node(c))
+            elif n in ("hyperlink", "smartTag", "sdt", "ins"):
+                walk(c)
+    walk(p_el)
+    inner = "".join(out).strip()
+    if not inner: inner = "&nbsp;"
+    return f'<div class="doc-p {align}">{inner}</div>'
+
+
+def _table_html(engine: DTMIXWebEngine, tbl_el) -> str:
+    rows = []
+    for tr in tbl_el:
+        if _local(tr) != "tr": continue
+        cells = []
+        for tc in tr:
+            if _local(tc) != "tc": continue
+            cell_parts = []
+            for c in tc:
+                n = _local(c)
+                if n == "p": cell_parts.append(_paragraph_html(engine, c))
+                elif n == "tbl": cell_parts.append(_table_html(engine, c))
+            cells.append("<td>" + "".join(cell_parts) + "</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return '<table class="doc-table">' + "".join(rows) + "</table>"
+
+
+def _elements_html(engine: DTMIXWebEngine, elements) -> str:
+    out = []
+    for el in elements or []:
+        n = _local(el)
+        if n == "p": out.append(_paragraph_html(engine, el))
+        elif n == "tbl": out.append(_table_html(engine, el))
+    return "".join(out)
+
+
+def _answer_elements_html(engine: DTMIXWebEngine, answer: dict, show_key: bool) -> str:
+    cls = "doc-answer correct" if show_key and answer.get("is_true") else "doc-answer normal"
+    return f'<div class="{cls}">{_elements_html(engine, answer.get("elements", []))}</div>'
+
+
+def rich_standard_part_html(engine: DTMIXWebEngine, part_idx: int | None, show_key: bool) -> str:
+    chunks = ['<div class="doc-page">']
+    for p_i, part in enumerate(engine.app.parsed_data.get("parts", [])):
+        if part_idx is not None and p_i != part_idx: continue
+        chunks.append(f'<div class="doc-part-title">{esc(engine._part_label(part))}</div>')
+        for muc in part.get("mucs", []):
+            if muc.get("title"):
+                chunks.append(f'<div class="doc-group-title">{esc(muc.get("title"))}</div>')
+            chunks.append(_elements_html(engine, muc.get("description_elements", [])))
+            for q in muc.get("questions", []):
+                if q.get("is_virtual"): continue
+                chunks.append(_elements_html(engine, q.get("q_elements", [])))
+                for ans in q.get("answers", []):
+                    chunks.append(_answer_elements_html(engine, ans, show_key))
+        chunks.append('<div style="height:8px"></div>')
+    chunks.append('</div>')
+    return "".join(chunks)
+
+
+def rich_youngmix_group_html(engine: DTMIXWebEngine, group_idx: int, show_key: bool) -> str:
+    all_mucs = [m for p in engine.app.parsed_data.get("parts", []) for m in p.get("mucs", [])]
+    if group_idx < 0 or group_idx >= len(all_mucs):
+        return '<div class="doc-page"><div class="doc-empty">Không tìm thấy nội dung nhóm.</div></div>'
+    muc = all_mucs[group_idx]
+    chunks = ['<div class="doc-page">']
+    if muc.get("title"):
+        chunks.append(f'<div class="doc-part-title">{esc(muc.get("title"))}</div>')
+    chunks.append(_elements_html(engine, muc.get("description_elements", [])))
+    for q in muc.get("questions", []):
+        if q.get("is_virtual"): continue
+        chunks.append(_elements_html(engine, q.get("q_elements", [])))
+        for ans in q.get("answers", []):
+            chunks.append(_answer_elements_html(engine, ans, show_key))
+    chunks.append('</div>')
+    return "".join(chunks)
+
+
+def show_rich_preview(body_html: str, height: int = 760) -> None:
+    css = """
+    <style>
+    *{box-sizing:border-box} body{margin:0;background:#EEF3F8;font-family:Inter,'Segoe UI',Arial,sans-serif}
+    .doc-page{background:#fff;color:#111827;margin:0 auto;padding:26px 32px;min-height:100%;font-family:'Times New Roman',serif;font-size:18px;line-height:1.42;box-shadow:0 0 0 1px #DCE5F0 inset}
+    .doc-part-title{font-size:20px;font-weight:800;margin:8px 0}.doc-group-title{font-size:17px;font-weight:700;margin:7px 0;color:#24364D}
+    .doc-p{margin:3px 0}.doc-p.center{text-align:center}.doc-p.right{text-align:right}.doc-p.justify{text-align:justify}
+    .doc-answer{margin:2px 0 2px 14px;padding:2px 7px;border-radius:6px}.doc-answer.correct{background:#EAF8F2;color:#0B6D4B;border-left:3px solid #28A979;font-weight:700}
+    .doc-img-wrap{text-align:center;margin:9px 0}.doc-img{max-width:96%;height:auto}.doc-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:16px}.doc-table td{border:1px solid #BBC7D5;padding:5px;vertical-align:top}
+    .doc-math{display:inline-block;vertical-align:middle;margin:0 2px}.doc-math math{font-size:1.08em}.media-chip{display:inline-block;background:#F3F0FF;color:#5B42A8;border-radius:999px;padding:2px 6px;font-size:12px}
+    sub,sup{line-height:0}
+    </style>
+    """
+    components.html(css + body_html, height=height, scrolling=True)
+
+
+def extract_short_answer(engine: DTMIXWebEngine, q: dict) -> str:
+    for elm in q.get("q_elements", []):
+        txt = element_text(engine, elm)
+        m = re.search(r"(?i)(?:đáp\s*án\s*[:\.]|(?:^|\n|\uFFFC)\s*A\.)\s*(.+)", txt)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return ""
+
+
+def answer_texts(engine: DTMIXWebEngine, q: dict) -> list[dict]:
+    out = []
+    for i, a in enumerate(q.get("answers", [])):
+        txts = []
+        media = {"image": 0, "math": 0, "table": 0}
+        for elm in a.get("elements", []):
+            txts.append(element_text(engine, elm))
+            mc = media_counts([elm])
+            for k in media:
+                media[k] += mc[k]
+        text = "\n".join(x for x in txts if x).strip()
+        out.append(
+            {
+                "index": i,
+                "text": text,
+                "correct": bool(a.get("is_true")),
+                "fixed": bool(a.get("is_fixed")),
+                "media": media,
+            }
+        )
+    return out
+
+
+def duplicate_answer_pairs(engine: DTMIXWebEngine, q: dict) -> list[str]:
+    answers = answer_texts(engine, q)
+    normalized = []
+    for a in answers:
+        t = re.sub(r"^\s*#?[A-Ga-g][\.\)]\s*", "", a["text"]).strip()
+        t = re.sub(r"\s+", "", t).rstrip(".").lower()
+        if any(a["media"].values()):
+            t += f"|media:{a['index']}"
+        normalized.append(t)
+    labels = "ABCDEFG"
+    dup = []
+    for i in range(len(normalized)):
+        for j in range(i + 1, len(normalized)):
+            if normalized[i] and normalized[i] == normalized[j]:
+                li = labels[i] if i < len(labels) else str(i + 1)
+                lj = labels[j] if j < len(labels) else str(j + 1)
+                dup.append(f"{li}–{lj}")
+    return dup
+
+
+def standard_preview_data(engine: DTMIXWebEngine) -> list[dict]:
+    rows = []
+    for p_idx, part in enumerate(engine.app.parsed_data.get("parts", [])):
+        title = engine._part_label(part)
+        p_type = part.get("type", 1)
+        q_display = 0
+        for m_idx, muc in enumerate(part.get("mucs", [])):
+            gtitle = muc.get("title") or (f"Nhóm {m_idx+1}" if len(part.get("mucs", [])) > 1 else "")
+            for q in muc.get("questions", []):
+                if q.get("is_virtual"):
+                    continue
+                q_display += 1
+                answers = answer_texts(engine, q)
+                valid = engine._question_has_valid_answer(q, p_type)
+                media = media_counts(q.get("q_elements", []))
+                for a in answers:
+                    for k in media:
+                        media[k] += a["media"][k]
+                rows.append(
+                    {
+                        "p_idx": p_idx,
+                        "part": title,
+                        "type": p_type,
+                        "group": gtitle,
+                        "number": q_display,
+                        "text": q.get("raw_text", "").strip(),
+                        "answers": answers,
+                        "valid": valid,
+                        "short_answer": extract_short_answer(engine, q) if p_type == 3 else "",
+                        "duplicates": duplicate_answer_pairs(engine, q) if p_type in (1, 2) else [],
+                        "fixed": bool(q.get("is_fixed")),
+                        "media": media,
+                    }
+                )
+    return rows
+
+
+def render_media(media: dict) -> str:
+    chips = []
+    if media.get("image"):
+        chips.append(f'<span class="media-chip">🖼️ Hình ảnh ×{media["image"]}</span>')
+    if media.get("math"):
+        chips.append(f'<span class="media-chip">∑ Công thức ×{media["math"]}</span>')
+    if media.get("table"):
+        chips.append(f'<span class="media-chip">▦ Bảng ×{media["table"]}</span>')
+    return "".join(chips)
+
+
+def render_standard_question(q: dict, show_key: bool) -> None:
+    issue = (not q["valid"]) or bool(q["duplicates"])
+    cls = "qcard issue" if issue else "qcard"
+    group = f" · {esc(q['group'])}" if q["group"] else ""
+    fixed = " · 🔒 cố định" if q["fixed"] else ""
+    body = [
+        f'<div class="{cls}">',
+        f'<div class="qnum">Câu {q["number"]}{fixed}</div>',
+        f'<div class="qtext">{esc(q["text"])}</div>',
+        render_media(q["media"]),
+    ]
+    for a in q["answers"]:
+        optcls = "opt correct" if (show_key and a["correct"]) else "opt normal"
+        tick = " ✓" if (show_key and a["correct"]) else ""
+        lock = " 🔒" if a["fixed"] else ""
+        body.append(f'<div class="{optcls}">{esc(a["text"])}{tick}{lock}</div>')
+    if q["short_answer"] and show_key:
+        body.append(f'<div class="short-answer">Đáp án: {esc(q["short_answer"])}</div>')
+    if not q["valid"]:
+        body.append('<span class="issue-chip">⚠️ Cần kiểm tra đáp án</span>')
+    if q["duplicates"]:
+        body.append(f'<span class="issue-chip">⚠️ Phương án trùng: {esc(", ".join(q["duplicates"]))}</span>')
+    body.append("</div>")
+    st.markdown("".join(body), unsafe_allow_html=True)
+
+
+def audit_standard(engine: DTMIXWebEngine, preview_rows: list[dict]) -> list[dict]:
+    issues = []
+    for q in preview_rows:
+        if not q["valid"]:
+            issues.append(
+                {
+                    "level": "error",
+                    "part": q["part"],
+                    "question": q["number"],
+                    "text": "Chưa nhận diện đáp án hợp lệ",
+                }
+            )
+        if q["duplicates"]:
+            issues.append(
+                {
+                    "level": "warning",
+                    "part": q["part"],
+                    "question": q["number"],
+                    "text": "Phương án trùng: " + ", ".join(q["duplicates"]),
+                }
+            )
+        if q["type"] == 1 and len(q["answers"]) not in (4,):
+            issues.append(
+                {
+                    "level": "warning",
+                    "part": q["part"],
+                    "question": q["number"],
+                    "text": f"Nhận diện {len(q['answers'])} phương án (thường là 4)",
+                }
+            )
+    return issues
+
+
+def youngmix_mode_label(mix_type: str) -> str:
+    return {
+        "Không hoán vị": "g0 · Không hoán vị",
+        "Chỉ câu hỏi": "g1 · Chỉ trộn câu hỏi",
+        "Chỉ đáp án": "g2 · Chỉ trộn đáp án",
+        "Câu hỏi & đáp án": "g3 · Trộn câu hỏi + đáp án",
+    }.get(mix_type, "g3 · Trộn câu hỏi + đáp án")
+
+
+def mix_type_from_label(label: str) -> str:
+    if label.startswith("g0"): return "Không hoán vị"
+    if label.startswith("g1"): return "Chỉ câu hỏi"
+    if label.startswith("g2"): return "Chỉ đáp án"
+    return "Câu hỏi & đáp án"
+
+
+def codes_ui(prefix: str) -> list[str]:
+    c1, c2, c3 = st.columns([.75, 1.25, 2.2])
+    n = int(c1.number_input("Số đề", 1, 24, 4, step=1, key=f"{prefix}_n"))
+    mode = c2.selectbox(
+        "Kiểu mã đề",
+        ["Chuẩn 111, 222...", "Liên tiếp", "Thủ công"],
+        key=f"{prefix}_code_mode",
+    )
+    if mode == "Chuẩn 111, 222...":
+        codes = [str(111 * i) for i in range(1, n + 1)]
+        c3.text_input("Mã đề sẽ tạo", ", ".join(codes), disabled=True, key=f"{prefix}_codes_std")
+    elif mode == "Liên tiếp":
+        start = c3.text_input("Mã bắt đầu", "101", key=f"{prefix}_code_start")
+        if start.strip().isdigit():
+            width = len(start.strip())
+            first = int(start.strip())
+            codes = [str(first + i).zfill(width) for i in range(n)]
+        else:
+            codes = []
+            c3.error("Mã bắt đầu phải là số.")
+    else:
+        raw = c3.text_input(
+            "Nhập mã đề (cách nhau bằng dấu phẩy)",
+            "111, 222, 333, 444",
+            key=f"{prefix}_codes_manual",
+        )
+        codes = [x.strip() for x in re.split(r"[,;\n]+", raw) if x.strip()]
+        if len(codes) != n:
+            c3.caption(f"Đã nhập {len(codes)} mã / số đề đang chọn {n}. DTMIX sẽ dùng danh sách mã đã nhập.")
+    return codes
+
+
+
+def _safe_zip_name(source_filename: str) -> str:
+    stem = Path(source_filename or "de_goc").stem.strip() or "de_goc"
+    stem = re.sub(r'[\\/:*?"<>|]+', "_", stem).strip(" .")
+    return f"dtmix_{stem}.zip"
+
+
+def auto_download_zip(zip_bytes: bytes, filename: str) -> None:
+    """Tự tải ZIP sau khi trộn xong."""
+    payload = base64.b64encode(zip_bytes).decode("ascii")
+    html_download = f"""
+<!doctype html>
+<html><body style="margin:0;background:transparent">
+<script>
+(function(){{
+  const b64 = {json.dumps(payload)};
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], {{type:"application/zip"}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = {json.dumps(filename)};
+  document.body.appendChild(a);
+  setTimeout(() => {{
+    a.click();
+    setTimeout(() => {{
+      URL.revokeObjectURL(url);
+      a.remove();
+    }}, 1500);
+  }}, 200);
+}})();
+</script>
+</body></html>
+"""
+    components.html(html_download, height=0, scrolling=False)
+
+
+def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
+    can_use, access_reason = _auth_access_reason()
+    if not can_use:
+        st.warning(access_reason or "Bạn đang ở chế độ xem. Hãy đăng nhập hoặc nâng cấp gói để tiếp tục.")
+        return
+    if not codes:
+        st.error("Chưa có mã đề hợp lệ.")
+        return
+    progress = st.progress(0, text="Đang chuẩn bị trộn đề...")
+
+    def cb(cur, total, text):
+        pct = int(100 * cur / total) if total else 0
+        progress.progress(min(max(pct, 0), 100), text=text)
+
+    engine.progress_callback = cb
+    try:
+        result = engine.mix(
+            codes,
+            header=header_values(),
+            standard_config=std_cfg,
+            youngmix_config=ym_cfg,
+        )
+
+        # Chỉ ghi nhận lượt sau khi bộ trộn đã tạo kết quả thành công. RPC ở Supabase
+        # kiểm tra hạn mức lần cuối theo kiểu nguyên tử, nên FREE không thể vượt quá 3 lượt.
+        usage_result = _record_successful_mix()
+        allowed_value = usage_result.get("allowed", False)
+        allowed = allowed_value if isinstance(allowed_value, bool) else str(allowed_value).lower() in {"true", "1", "t", "yes"}
+        if not allowed:
+            progress.empty()
+            st.session_state.pop("mix_result", None)
+            st.warning(str(usage_result.get("reason") or "Bạn đã dùng hết lượt trộn miễn phí. Hãy nâng cấp gói để tiếp tục."))
+            if _plan_code() == "FREE":
+                if st.button("💎 Xem gói nâng cấp", key=f"upgrade_after_limit_{int(time.time())}", type="primary"):
+                    _upgrade_dialog()
+            return
+
+        progress.progress(100, text="Hoàn tất — đang tải ZIP...")
+        st.session_state.mix_result = result
+        zip_name = _safe_zip_name(engine.filename)
+        auto_download_zip(result.zip_bytes, zip_name)
+        if _plan_code() == "FREE":
+            remaining = _free_mix_remaining(st.session_state.get("auth_mix_usage") or {})
+            st.toast(f"Đã trộn xong. Tài khoản FREE còn {remaining}/{FREE_MIX_LIMIT} lượt.", icon="✅")
+        else:
+            st.toast(f"Đã trộn xong. Đang tải {zip_name}", icon="✅")
+    except Exception as exc:
+        st.error(f"Không thể trộn đề: {exc}")
+        with st.expander("Chi tiết lỗi kỹ thuật"):
+            st.exception(exc)
+
+
+def download_results() -> None:
+    result = st.session_state.get("mix_result")
+    if not result:
+        return
+    st.markdown(
+        f'<div class="result-ok">✅ Đã tạo {len(result.files)} file kết quả. Chọn tải toàn bộ hoặc tải từng file.</div>',
+        unsafe_allow_html=True,
+    )
+    st.download_button(
+        "⬇️ TẢI TOÀN BỘ KẾT QUẢ (.ZIP)",
+        data=result.zip_bytes,
+        file_name=result.zip_name,
+        mime="application/zip",
+        type="primary",
+        use_container_width=True,
+        key="download_all_zip",
+    )
+    outdir = Path(result.output_dir)
+    with st.expander("Tải từng file", expanded=False):
+        files = [p for p in outdir.rglob("*") if p.is_file()] if outdir.exists() else []
+        for i in range(0, len(files), 3):
+            cols = st.columns(3)
+            for j, p in enumerate(files[i:i+3]):
+                cols[j].download_button(
+                    f"⬇ {p.name}",
+                    data=p.read_bytes(),
+                    file_name=p.name,
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        if p.suffix.lower() == ".docx"
+                        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        if p.suffix.lower() == ".xlsx"
+                        else "application/octet-stream"
+                    ),
+                    use_container_width=True,
+                    key=f"file_dl_{i}_{j}_{p.name}",
+                )
+
+
+with st.container(key="dtmix_workspace"):
+    # ============================================================
+    # 1 — HEADER + TOOLBAR
+    # ============================================================
+    with st.container(border=True):
+        title_row, theme_row = st.columns([4.6, 1], gap="small")
+        title_row.markdown("**📝 Thông tin đầu trang đề**")
+        theme_row.selectbox(
+            "Màu giao diện",
+            list(_THEME_PRESETS.keys()),
+            key="ui_theme",
+            label_visibility="collapsed",
+        )
+
+        h1, h2 = st.columns([1.15, 1.35], gap="small")
+        h1.text_input("Sở GD&ĐT / Phòng", key="hdr_so")
+        h2.text_input("Tên trường", key="hdr_truong")
+        h3, h4, h5, h6 = st.columns([1.18, .82, 1.0, 1.18], gap="small")
+        h3.text_input("Tên kỳ thi", key="hdr_kythi")
+        h4.text_input("Năm học", key="hdr_namhoc")
+        h5.text_input("Môn thi", key="hdr_monthi")
+        h6.text_input("Thời gian làm bài", key="hdr_thoigian")
+
+        st.divider()
+
+        # Bố cục: Đề gốc | Chế độ | Mã đề. Nút Trộn & xuất nằm sau phần tự động kiểm tra.
+        file_col, mode_col, code_col = st.columns([2.45, 1.45, 1.65], gap="medium")
+
+        current_sig = None
+        raw = None
+        upload_name = None
+
+        # Mỗi lần xóa đề sẽ tăng phiên bản widget để file cũ không tự quay lại.
+        st.session_state.setdefault("source_docx_version", 0)
+
+        with file_col:
+            st.markdown('<div class="upload-zone-title">1. 📄 Tải đề cần trộn lên (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
+
+            # Chưa có đề: hiện đúng khu vực Upload ban đầu.
+            if "source_docx_bytes" not in st.session_state:
+                uploaded = st.file_uploader(
+                    "Đề gốc",
+                    type=["docx"],
+                    accept_multiple_files=False,
+                    key=f"source_docx_{st.session_state['source_docx_version']}",
+                    label_visibility="collapsed",
+                    disabled=not _AUTH_CAN_USE,
+                    help="Đăng nhập để tải đề lên." if not _AUTH_CAN_USE else None,
+                )
+
+                if uploaded is not None:
+                    # Lưu đề vào session rồi chạy lại giao diện. Ở lần chạy sau
+                    # uploader sẽ được thay bằng thẻ thông tin file + nút Xóa đề cũ.
+                    _raw = uploaded.getvalue()
+                    st.session_state["source_docx_bytes"] = _raw
+                    st.session_state["source_docx_name"] = uploaded.name
+                    st.session_state["source_docx_size"] = len(_raw)
+                    st.rerun()
+
+            # Đã có đề: KHÔNG hiện vùng dấu + nữa; chỉ hiện thông tin file và nút xóa.
+            else:
+                raw = st.session_state.get("source_docx_bytes")
+                upload_name = st.session_state.get("source_docx_name", "de_goc.docx")
+                upload_size = int(st.session_state.get("source_docx_size", len(raw or b"")))
+
+                # Thẻ file sau khi tải lên: đặt giữa, rộng tương đương vùng Upload ban đầu.
+                _left, file_card_col, _right = st.columns([1, 2, 1], gap="small")
+                with file_card_col:
+                    with st.container(border=True, key="source_file_card"):
+                        info_col, remove_col = st.columns([3.4, 2.4], gap="small", vertical_alignment="center")
+                        with info_col:
+                            st.markdown(
+                                f'<div style="font-size:15.5px;font-weight:850;color:#173B65;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📄 {esc(upload_name)}</div>'
+                                f'<div style="font-size:13.5px;color:#728399;margin-top:3px">{upload_size/1024:.1f} KB • DOCX</div>',
+                                unsafe_allow_html=True,
+                            )
+                        with remove_col:
+                            if st.button("✕ Xóa đề cũ", key="remove_source_docx", use_container_width=True):
+                                clear_engine()
+                                st.session_state.pop("source_docx_bytes", None)
+                                st.session_state.pop("source_docx_name", None)
+                                st.session_state.pop("source_docx_size", None)
+                                st.session_state.pop("pending_mix", None)
+                                st.session_state["source_docx_version"] += 1
+                                st.rerun()
+
+        with mode_col:
+            st.markdown('<div class="tool-card-title">2. ⚙️ Chọn chế độ xử lý</div>', unsafe_allow_html=True)
+            mode = st.radio(
+                "Chế độ",
+                ["Tự động PHẦN I–IV", "Kí hiệu nhóm g1/g2/g3/g4"],
+                key="dtmix_mode",
+                label_visibility="collapsed",
+            )
+            is_youngmix = mode.startswith("Kí hiệu nhóm")
+            st.caption("<g1>: đảo câu • <g2>: Đảo phương án • <g3>: cả hai")
+
+        with code_col:
+            st.markdown('<div class="tool-card-title">3. 🏷️ Số lượng đề / Kiểu mã đề</div>', unsafe_allow_html=True)
+            top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
+
+        # Xác định engine hiện tại có đúng file/chế độ không
+        if raw is not None:
+            current_sig = hashlib.sha256(raw + str(is_youngmix).encode()).hexdigest()
+
+        existing_engine = st.session_state.get("dtmix_engine")
+        engine_ready = bool(
+            existing_engine
+            and current_sig
+            and st.session_state.get("dtmix_signature") == current_sig
+        )
+
+        # TỰ ĐỘNG PHÂN TÍCH ngay khi người dùng chọn file hoặc đổi chế độ xử lý.
+        # Không cần bấm nút "Phân tích đề".
+        auto_analysis_error = None
+        if raw is not None and not engine_ready and _AUTH_CAN_USE:
+            clear_engine()
+            with st.spinner("DTMIX đang tự động phân tích câu hỏi, đáp án, hình ảnh, bảng và công thức..."):
+                try:
+                    eng = DTMIXWebEngine(
+                        raw,
+                        upload_name,
+                        youngmix=is_youngmix,
+                        header=header_values(),
+                    )
+                    st.session_state.dtmix_engine = eng
+                    st.session_state.dtmix_signature = current_sig
+                    st.session_state.mix_result = None
+                    existing_engine = eng
+                    engine_ready = True
+                except Exception as exc:
+                    auto_analysis_error = exc
+                    engine_ready = False
+
+        if auto_analysis_error is not None:
+            st.error(f"Không phân tích được đề: {auto_analysis_error}")
+            with st.expander("Chi tiết lỗi"):
+                st.exception(auto_analysis_error)
+
+    engine = st.session_state.get("dtmix_engine")
+    if current_sig is not None and st.session_state.get("dtmix_signature") != current_sig:
+        engine = None
+
+    # ============================================================
+    # PHÂN TÍCH CHI TIẾT ĐỀ + CẤU HÌNH (ĐẶT TRÊN PREVIEW)
+    # ============================================================
+    std_config = None
+    ym_config = None
+
+
+    def _summary_question_label(q: dict, fallback: int) -> str:
+        raw = q.get("raw_text", "") or ""
+        m = re.search(r"(?i)(?:#\s*)?(?:Câu|Question)\s*(\d+)", raw)
+        return m.group(1) if m else str(fallback)
+
+
+    if engine:
+        summary = engine.summary()
+        parts = summary.get("parts", [])
+        unit_count = len(summary.get("youngmix_groups", [])) if engine.youngmix else len(parts)
+        st.markdown(
+            f"""
+    <div class="summary-compact">
+      <div class="summary-chip"><div class="v">{unit_count}</div><div class="l">Phần / nhóm nhận diện</div></div>
+      <div class="summary-chip"><div class="v">{summary["total_questions"]}</div><div class="l">Tổng số câu</div></div>
+      <div class="summary-chip"><div class="v">{summary["valid_answers"]}/{summary["total_questions"]}</div><div class="l">Câu đã có đáp án / hợp lệ</div></div>
+      <div class="summary-chip"><div class="v">{summary["missing_answers"]}</div><div class="l">Câu còn thiếu đáp án</div></div>
+    </div>
+    """,
+            unsafe_allow_html=True,
+        )
+
+        # -------- PHÂN TÍCH CHI TIẾT: luôn nằm trên xem trước --------
+        detail_cards = []
+        if not engine.youngmix:
+            roman = {1:"PHẦN I",2:"PHẦN II",3:"PHẦN III",4:"PHẦN IV"}
+            for part in parts:
+                total = part["question_count"]
+                valid = part["valid_count"]
+                missing_labels = []
+                seq = 0
+                for g in part.get("groups", []):
+                    for q in g.get("questions", []):
+                        seq += 1
+                        if not q.get("valid_answer"):
+                            missing_labels.append(_summary_question_label(q, seq))
+                title = roman.get(part.get("type"), part.get("title", "PHẦN"))
+                if int(part.get("type", 1)) == 4:
+                    status = '<div class="analysis-card-ok">Tự luận: không bắt buộc đánh dấu đáp án.</div>'
+                elif missing_labels:
+                    status = f'<div class="analysis-card-bad">Thiếu đáp án: Câu {esc(", ".join(missing_labels))}</div>'
+                else:
+                    status = '<div class="analysis-card-ok">✓ Đủ đáp án cho tất cả câu.</div>'
+                detail_cards.append(
+                    f'<div class="analysis-card"><div class="analysis-card-title">{esc(title)}</div>'
+                    f'<div class="analysis-card-meta">{total} câu · Có đáp án/hợp lệ: <b>{valid}/{total}</b> · Thiếu: <b>{len(missing_labels)}</b></div>'
+                    f'{status}</div>'
+                )
+        else:
+            ym_groups = summary.get("youngmix_groups", [])
+            flat = [g for p in parts for g in p.get("groups", [])]
+            for i, yg in enumerate(ym_groups):
+                sg = flat[i] if i < len(flat) else {"questions": [], "question_count": yg.get("question_count",0)}
+                total = int(yg.get("question_count", 0))
+                qs_all = sg.get("questions", [])
+                qs = qs_all[:total] if total > 0 else qs_all
+                if total <= 0:
+                    total = len(qs)
+                valid = min(total, sum(1 for q in qs if q.get("valid_answer")))
+                missing = [
+                    _summary_question_label(q, j + 1)
+                    for j, q in enumerate(qs)
+                    if not q.get("valid_answer")
+                ]
+                fixed_text = "Cố định" if (yg.get("is_fixed") or True) else "Có thể đổi vị trí"
+                if missing:
+                    status = f'<div class="analysis-card-bad">Thiếu đáp án: Câu {esc(", ".join(missing))}</div>'
+                else:
+                    status = '<div class="analysis-card-ok">✓ Đủ đáp án cho các câu cần đáp án.</div>'
+                detail_cards.append(
+                    f'<div class="analysis-card"><div class="analysis-card-title">{esc(yg.get("name",f"NHÓM {i+1}"))} {esc(yg.get("tag","<g>"))}</div>'
+                    f'<div class="analysis-card-meta">{total} câu · Có đáp án/hợp lệ: <b>{valid}/{total}</b> · Thiếu: <b>{len(missing)}</b><br>'
+                    f'{esc(yg.get("q_type",""))} · {esc(yg.get("mix_type",""))} · {fixed_text}</div>{status}</div>'
+                )
+        st.markdown('<div class="analysis-detail-grid">'+''.join(detail_cards)+'</div>', unsafe_allow_html=True)
+
+        # -------- TRỘN & XUẤT: ngay sau kết quả tự động kiểm tra --------
+        st.markdown(
+            '<div class="mix-action-wrap">'
+            '<div class="mix-action-title">🚀 Trộn đề & xuất kết quả</div>'
+            '<div class="mix-action-sub">Đề đã được tự động kiểm tra. Kiểm tra số câu/đáp án ở các ô phía trên rồi bấm nút để trộn và tải ZIP.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        mx1, mx2, mx3 = st.columns([1.1, 2.2, 1.1], gap="small")
+        with mx2:
+            mix_clicked = st.button(
+                "🚀 TRỘN ĐỀ & TẢI ZIP",
+                type="primary",
+                use_container_width=True,
+                disabled=not engine_ready,
+                key="after_analysis_mix",
+            )
+            st.markdown(
+                f'<div class="mix-ready-status">{"✅ Đã tự động kiểm tra đề" if engine_ready else "⏳ Chưa sẵn sàng"}</div>',
+                unsafe_allow_html=True,
+            )
+        if mix_clicked:
+            st.session_state["pending_mix"] = True
+            st.session_state["pending_codes"] = top_codes
+
+        # -------- CẤU HÌNH TRỘN: cũng đặt trên preview --------
+        if not engine.youngmix:
+            st.markdown('<div class="auto-config-title">⚙️ Cấu hình trộn tự động</div>', unsafe_allow_html=True)
+            keep_titles = st.checkbox("Giữ tiêu đề nhóm/mục", value=False, key="std_keep_titles_v64")
+            std_groups = {}
+            h0,h1,h2,h3,h4 = st.columns([2.4,1.0,1.0,1.35,1.0], gap="small")
+            h0.markdown("**Phần / nhóm**"); h1.markdown("**Trộn câu**"); h2.markdown("**Số câu lấy**"); h3.markdown("**Giữ vị trí câu**"); h4.markdown("**Trộn nhóm**")
+            for part in parts:
+                multi = len(part.get("groups", [])) > 1
+                for g in part.get("groups", []):
+                    key=f"s64_{g['p_idx']}_{g['m_idx']}"
+                    with st.container(border=True):
+                        c0,c1,c2,c3,c4=st.columns([2.4,1.0,1.0,1.35,1.0], gap="small")
+                        with c0:
+                            title=part["title"] + (f' · {g["title"]}' if multi and g.get("title") else '')
+                            st.markdown(f'<div class="config-part-label">{esc(title)}</div><div class="config-part-meta">{g["question_count"]} câu</div>',unsafe_allow_html=True)
+                        with c1:
+                            shuffle_q=st.toggle("Trộn câu",value=(part["type"]!=4),key=key+"_sq",label_visibility="collapsed")
+                        with c2:
+                            pick=st.number_input("Số câu lấy",0,g["question_count"],g["question_count"],key=key+"_pick",label_visibility="collapsed")
+                        with c3:
+                            fixed=st.text_input("Giữ vị trí câu",value=", ".join(str(q["index"]) for q in g["questions"] if q["fixed"]),placeholder="VD: 1, 5",key=key+"_fix",label_visibility="collapsed")
+                        with c4:
+                            shuffle_group=st.toggle("Trộn nhóm",value=(multi and not g["is_fixed"] and part["type"]!=4),disabled=not multi,key=key+"_sg",label_visibility="collapsed")
+                        std_groups[f"{g['p_idx']}:{g['m_idx']}"]={"shuffle_questions":shuffle_q,"pick":int(pick),"fixed_questions":fixed,"shuffle_group_order":shuffle_group}
+            std_config={"keep_group_titles":keep_titles,"groups":std_groups}
+        else:
+            groups=summary.get("youngmix_groups",[])
+            st.markdown('<div class="ym-config-head">🩺 Rà soát & cấu hình YoungMix</div>', unsafe_allow_html=True)
+            st.markdown('<div class="ym-config-note">Cấu trúc, số câu, tình trạng đáp án và toàn bộ tùy chọn YoungMix được đặt ở đây trước phần xem trước.</div>', unsafe_allow_html=True)
+            y0,y1,y2=st.columns([1.55,1.65,2.8],gap="small")
+            with y0:
+                continuous=st.toggle("Đánh số câu liên tục giữa các nhóm",value=False,key="ym_cont_v64")
+            with y1:
+                master_fix=st.toggle("Cố định vị trí tất cả các nhóm",value=True,key="ym_master_v64",help="Mặc định bật theo yêu cầu: các nhóm giữ nguyên vị trí.")
+            with y2:
+                st.caption("Mặc định: cố định vị trí nhóm. Chỉ nội dung bên trong nhóm được trộn theo g1/g2/g3.")
+
+            ym_groups_cfg=[]
+            hh0,hh1,hh2,hh3,hh4,hh5=st.columns([1.8,1.45,2.0,.9,1.05,1.1],gap="small")
+            hh0.markdown("**Nhóm**"); hh1.markdown("**Loại câu**"); hh2.markdown("**Cách trộn**"); hh3.markdown("**Số câu lấy**"); hh4.markdown("**Cố định nhóm**"); hh5.markdown("**Đánh lại Câu 1**")
+            for i,g in enumerate(groups):
+                with st.container(border=True):
+                    c0,c1,c2,c3,c4,c5=st.columns([1.8,1.45,2.0,.9,1.05,1.1],gap="small")
+                    with c0:
+                        st.markdown(f'<div class="config-part-label">{esc(g["name"])} {esc(g["tag"])}</div><div class="config-part-meta">{g["question_count"]} câu</div>',unsafe_allow_html=True)
+                    type_opts=["TN 2025 - Phần 1","TN 2025 - Phần 2","TN 2025 - Phần 3","Trắc nghiệm","Tự luận"]
+                    default_type=g["q_type"] if g["q_type"] in type_opts else "Trắc nghiệm"
+                    with c1:
+                        q_type=st.selectbox("Loại câu",type_opts,index=type_opts.index(default_type),key=f"ym_type_v64_{i}",label_visibility="collapsed")
+                    modes=["g0 · Không hoán vị","g1 · Chỉ trộn câu hỏi","g2 · Chỉ trộn đáp án","g3 · Trộn câu hỏi + đáp án"]
+                    dm=youngmix_mode_label(g["mix_type"]); dm=dm if dm in modes else modes[-1]
+                    with c2:
+                        mix_label=st.selectbox("Cách trộn",modes,index=modes.index(dm),key=f"ym_mode_v64_{i}",label_visibility="collapsed")
+                    with c3:
+                        pick=st.number_input("Số câu lấy",0,g["question_count"],g["question_count"],key=f"ym_pick_v64_{i}",label_visibility="collapsed")
+                    with c4:
+                        fix=st.checkbox("Cố định nhóm",value=(master_fix or g["is_fixed"]),disabled=master_fix,key=f"ym_fix_v64_{i}",label_visibility="collapsed")
+                        st.caption("Có" if fix else "Không")
+                    with c5:
+                        start_q1=st.checkbox("Đánh lại Câu 1",value=((i==0) if continuous else True),disabled=continuous,key=f"ym_start_v64_{i}",label_visibility="collapsed")
+                        st.caption("Có" if start_q1 else "Không")
+                    ym_groups_cfg.append({"q_type":q_type,"mix_type":mix_type_from_label(mix_label),"pick":int(pick),"fix":fix,"start_q1":start_q1})
+            ym_config={"continuous_numbering":continuous,"master_fix":master_fix,"groups":ym_groups_cfg}
+
+        # -------- XEM TRƯỚC: phía dưới toàn bộ phân tích/cấu hình --------
+        st.markdown('<div class="workspace-title">Xem trước đề online</div>', unsafe_allow_html=True)
+        pv,side=st.columns([2.35,1],gap="large")
+        with pv:
+            with st.container(border=True):
+                st.markdown('<div class="preview-heading"><b>👁️ Đề gốc đã nhận diện</b><span class="preview-badge">~70% không gian</span></div>', unsafe_allow_html=True)
+                st.markdown('<div class="word-preview-note"><b>Quy ước màu:</b> DTMIX đưa toàn bộ chữ đỏ gốc về màu thường trong bản preview và <b style="color:#D71920">chỉ tô đỏ phương án mà bộ phân tích xác định là đáp án đúng</b>. File Word gốc không bị sửa.</div>',unsafe_allow_html=True)
+                if st.session_state.get("preview_mode_v64","Xem trực tiếp DOCX").startswith("Xem trực tiếp"):
+                    browser_docx_preview(engine,"preview_browser_v64",height=900)
+                else:
+                    exact_word_preview(engine,"preview_exact_v64")
+        with side:
+            with st.container(border=True):
+                st.markdown('<div class="preview-side-title">Hiển thị xem trước</div>',unsafe_allow_html=True)
+                preview_mode=st.radio("Kiểu xem",["Xem trực tiếp DOCX","Bản in PDF (nếu máy chủ có LibreOffice)"],key="preview_mode_v64")
+                st.markdown('<div class="preview-side-box"><b>Đỏ:</b> đáp án đúng DTMIX đã nhận diện.<br><b>Đen:</b> nội dung/đáp án còn lại.<br><br>Nếu đáp án có công thức hoặc hình ảnh, ít nhất ký hiệu phương án A/B/C/D của đáp án đúng sẽ được tô đỏ.</div>',unsafe_allow_html=True)
+    else:
+        summary=None; parts=[]
+        with st.container(border=True):
+            st.caption("Tải và phân tích đề để hiển thị cấu trúc, cấu hình và xem trước.")
+
+    # ============================================================
+    # MIX REQUEST FROM BUTTON AFTER ANALYSIS
+    # ============================================================
+    if engine and st.session_state.get("pending_mix"):
+        st.session_state["pending_mix"] = False
+        _codes = st.session_state.get("pending_codes", [])
+        if engine.youngmix:
+            run_mix(engine, _codes, ym_cfg=ym_config)
+        else:
+            run_mix(engine, _codes, std_cfg=std_config)
+
+    # ============================================================
+    # GUIDE
+    # ============================================================
+    st.markdown("---")
+    with st.expander("📖 Hướng dẫn sử dụng DTMIX chi tiết", expanded=False):
+        st.markdown(
+            """
+    ### 1. Chuẩn bị file đề gốc
+    - DTMIX nhận file **Word `.docx`**, dung lượng tối đa **100 MB/file**.
+    - Nên giữ cấu trúc câu hỏi rõ ràng: `Câu 1`, `Câu 2`...; các phương án dùng `A.`, `B.`, `C.`, `D.`.
+    - Với đề chia theo chương trình hiện hành, nên đặt tiêu đề rõ: `PHẦN I`, `PHẦN II`, `PHẦN III`, `PHẦN IV` để chế độ **Tự động** nhận diện chính xác hơn.
+
+    ### 2. Tải đề lên và chọn chế độ xử lý
+    - Ở mục **1. Tải đề cần trộn**, kéo thả file Word vào vùng màu xanh hoặc bấm **Upload** để chọn file.
+    - Ở mục **2. Chế độ xử lý**, chọn một trong hai cách:
+      - **Tự động PHẦN I–IV:** phù hợp khi đề đã chia sẵn theo các phần.
+      - **Kí hiệu nhóm g1/g2/g3/g4:** dùng khi muốn kiểm soát cách đảo theo từng nhóm câu hỏi.
+
+    ### 3. Quy ước nhóm trong DTMIX
+    - `<g0>`: giữ nguyên, **không hoán vị**.
+    - `<g1>`: **chỉ hoán vị thứ tự câu hỏi** trong nhóm.
+    - `<g2>`: **chỉ hoán vị phương án/đáp án** của từng câu.
+    - `<g3>`: hoán vị **cả câu hỏi và phương án**.
+    - `<g4>`: nhóm **tự luận**, không xử lý như câu trắc nghiệm nhiều lựa chọn.
+    - Có thể dùng `<#g1>`, `<#g2>`, `<#g3>`... khi cần **cố định vị trí của nhóm** trong đề hoặc khi đưa đề vào rồi tùy chọn ở cấu hình trộn.
+
+    ### 4. Đánh dấu đáp án đúng trong file Word
+    - **Phần I – trắc nghiệm nhiều lựa chọn:** nên **tô đỏ hoặc gạch chân** đúng một phương án đúng.
+    - **Phần II – đúng/sai:** có thể đánh dấu các mệnh đề đúng bằng định dạng đáp án mà DTMIX nhận diện.
+    - **Phần III – trả lời ngắn:** nên ghi đáp án theo dạng `Đáp án: ...` hoặc `A. giá trị` theo cấu trúc đề đang dùng.
+    - Sau khi tải file, hãy xem mục **Rà soát/Phân tích**. Nếu DTMIX báo thiếu hoặc nhận sai đáp án, nên sửa file Word gốc rồi tải lại trước khi trộn.
+
+    ### 5. Kiểm tra đề trước khi trộn
+    - Xem các thông tin DTMIX đã nhận diện: số phần/nhóm, số câu, đáp án và các cảnh báo.
+    - Kiểm tra khu vực **Xem trước đề online**:
+      - đáp án DTMIX nhận diện là đúng sẽ được **tô đỏ trong bản xem trước**;
+      - các nội dung còn lại hiển thị màu thường;
+      - **file Word gốc không bị thay đổi** bởi bước xem trước.
+    - Nếu có công thức, hình ảnh hoặc bảng, nên lướt nhanh qua vài trang để chắc chắn bố cục vẫn đúng.
+
+    ### 6. Cấu hình trộn và mã đề
+    - Chọn cách trộn cho từng phần/nhóm theo nhu cầu.
+    - Nhập hoặc chọn các **mã đề** cần tạo.
+    - Với nhóm cần giữ nguyên vị trí hoặc không đảo, kiểm tra lại tùy chọn cố định trước khi xuất.
+
+    ### 7. Trộn và tải kết quả
+    - Khi phần rà soát không còn lỗi quan trọng, bấm **TRỘN & TẢI ZIP**.
+    - DTMIX sẽ tạo các mã đề và gói kết quả thành file ZIP để tải về.
+    - Sau khi tải, nên mở thử ít nhất **1 mã đề** và **đáp án** để kiểm tra lần cuối trước khi in hoặc phát hành.
+
+    > **Mẹo:** Nếu DTMIX nhận diện chưa đúng, cách an toàn nhất là chỉnh lại cấu trúc/đáp án ngay trong file Word gốc, sau đó tải lại file và rà soát lần nữa trước khi trộn.
+    """
+        )
+
+    st.markdown(
+        '<div class="footer">DTMIX Online• Preview tô đỏ đáp án theo kết quả phân tích DTMIX</div>',
+        unsafe_allow_html=True,
+    )

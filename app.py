@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import hmac
 import html
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -343,11 +345,128 @@ def _render_auth_config_error() -> None:
     st.caption("Hãy kiểm tra SUPABASE_URL và SUPABASE_ANON_KEY trong Streamlit → Settings → Secrets.")
 
 
+def _oauth_public_url() -> str:
+    """URL công khai quay về sau OAuth. Ưu tiên tên miền DTMIX của người dùng."""
+    url = _secret_value("DTMIX_PUBLIC_URL", "https://dtmix.a1dbm.io.vn/").strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/") + "/"
+
+
+def _oauth_state_secret() -> str:
+    return _secret_value("DTMIX_OAUTH_STATE_SECRET")
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _google_oauth_url() -> str:
+    """Tạo URL Google OAuth theo PKCE mà không cần lưu verifier trong session."""
+    base_url, _ = _supabase_config()
+    secret = _oauth_state_secret()
+    if not base_url or not secret:
+        return ""
+
+    state = secrets.token_urlsafe(24)
+    verifier = _b64url(hmac.new(secret.encode("utf-8"), state.encode("utf-8"), hashlib.sha256).digest())
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    redirect_to = _oauth_public_url() + "?oauth_state=" + urllib.parse.quote(state, safe="")
+    params = {
+        "provider": "google",
+        "redirect_to": redirect_to,
+        "code_challenge": challenge,
+        "code_challenge_method": "s256",
+    }
+    return f"{base_url}/auth/v1/authorize?{urllib.parse.urlencode(params)}"
+
+
+def _qp(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        value = value[-1] if value else ""
+    return str(value or "")
+
+
+def _remove_oauth_query_params() -> None:
+    for key in ("code", "oauth_state", "error", "error_description"):
+        try:
+            del st.query_params[key]
+        except Exception:
+            pass
+
+
+def _handle_google_oauth_callback() -> None:
+    """Đổi auth code của Supabase lấy session sau khi Google chuyển người dùng về DTMIX."""
+    code = _qp("code")
+    state = _qp("oauth_state")
+    error = _qp("error")
+    error_description = _qp("error_description")
+
+    if error:
+        st.session_state["auth_oauth_error"] = error_description or error
+        _remove_oauth_query_params()
+        st.rerun()
+
+    if not code or not state or _auth_logged_in():
+        return
+
+    secret = _oauth_state_secret()
+    if not secret:
+        st.session_state["auth_oauth_error"] = (
+            "Thiếu DTMIX_OAUTH_STATE_SECRET trong Streamlit Secrets nên chưa thể hoàn tất đăng nhập Google."
+        )
+        _remove_oauth_query_params()
+        st.rerun()
+
+    verifier = _b64url(hmac.new(secret.encode("utf-8"), state.encode("utf-8"), hashlib.sha256).digest())
+    try:
+        data = _supabase_json(
+            "/auth/v1/token",
+            method="POST",
+            query={"grant_type": "pkce"},
+            payload={"auth_code": code, "code_verifier": verifier},
+        )
+        if not data.get("access_token"):
+            raise DTMIXAuthError("Google không trả về phiên đăng nhập hợp lệ.")
+        _store_auth_session(data)
+        st.session_state["auth_subscription"] = _load_subscription()
+        st.session_state["auth_just_logged_in"] = True
+        st.session_state["auth_google_success"] = True
+    except DTMIXAuthError as exc:
+        st.session_state["auth_oauth_error"] = str(exc)
+    finally:
+        _remove_oauth_query_params()
+    st.rerun()
+
+
+def _render_google_login_button() -> None:
+    oauth_url = _google_oauth_url()
+    st.markdown('<div class="auth-or"><span>hoặc</span></div>', unsafe_allow_html=True)
+    if oauth_url:
+        st.markdown(
+            f'<a class="google-auth-button" href="{html.escape(oauth_url, quote=True)}" target="_top">'
+            '<span class="google-g">G</span><span>Đăng nhập bằng Google</span></a>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.button("G  Đăng nhập bằng Google", disabled=True, use_container_width=True, key=f"google_disabled_{secrets.token_hex(4)}")
+        st.caption("Quản trị viên cần thêm DTMIX_OAUTH_STATE_SECRET vào Streamlit Secrets để bật Google.")
+
+
 def _login_form_body() -> None:
     if not _auth_config_ready():
         _render_auth_config_error()
         return
-    st.caption("Đăng nhập để tải đề, phân tích và xuất mã đề.")
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">🧪</div>'
+        '<div><div class="auth-dialog-title">Chào mừng trở lại</div>'
+        '<div class="auth-dialog-sub">Đăng nhập để sử dụng đầy đủ DTMIX Online</div></div></div>',
+        unsafe_allow_html=True,
+    )
     with st.form("dtmix_login_form", clear_on_submit=False):
         email = st.text_input("Email", placeholder="tenban@example.com", key="auth_login_email")
         password = st.text_input("Mật khẩu", type="password", key="auth_login_password")
@@ -364,7 +483,8 @@ def _login_form_body() -> None:
                 st.rerun()
             except DTMIXAuthError as exc:
                 st.error(str(exc))
-    st.caption("🔒 Mật khẩu được xác thực bởi Supabase Auth, không lưu trong mã nguồn DTMIX.")
+    _render_google_login_button()
+    st.markdown('<div class="auth-security-note">🔒 Tài khoản được xác thực an toàn bởi Supabase Auth.</div>', unsafe_allow_html=True)
 
 
 def _signup_form_body() -> None:
@@ -374,7 +494,12 @@ def _signup_form_body() -> None:
     if not _secret_bool("DTMIX_ALLOW_SIGNUP", True):
         st.info("Đăng ký tài khoản mới hiện đang tạm khóa.")
         return
-    st.caption("Tạo tài khoản DTMIX bằng email và mật khẩu.")
+    st.markdown(
+        '<div class="auth-dialog-hero signup"><div class="auth-dialog-icon">✨</div>'
+        '<div><div class="auth-dialog-title">Tạo tài khoản DTMIX</div>'
+        '<div class="auth-dialog-sub">Bắt đầu với tài khoản miễn phí</div></div></div>',
+        unsafe_allow_html=True,
+    )
     with st.form("dtmix_signup_form", clear_on_submit=False):
         full_name = st.text_input("Họ và tên", key="auth_signup_name")
         email = st.text_input("Email đăng ký", placeholder="tenban@example.com", key="auth_signup_email")
@@ -402,6 +527,7 @@ def _signup_form_body() -> None:
                     st.success("Đã tạo tài khoản. Hãy kiểm tra email xác nhận rồi đăng nhập.")
             except DTMIXAuthError as exc:
                 st.error(str(exc))
+    _render_google_login_button()
 
 
 # Streamlit Community Cloud hiện hỗ trợ st.dialog. Có fallback để file vẫn chạy
@@ -422,6 +548,9 @@ else:
     def _signup_dialog():
         st.session_state["auth_inline_panel"] = "signup"
         st.rerun()
+
+
+_handle_google_oauth_callback()
 
 
 _refresh_auth_if_needed()
@@ -832,25 +961,28 @@ hr{{margin:.45rem 0!important}}
 /* Thẻ đề đã tải lên: nền kem vàng nhạt để nổi bật, dễ nhận biết */
 .st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"],
 .st-key-source_file_card{{
-  background:linear-gradient(135deg,#FFF9E8,#FFF1C7)!important;
-  border:1.5px solid #E9BD55!important;
+  background:#9FD7F9!important;
+  border:1.5px solid #55AEE4!important;
   border-radius:14px!important;
-  box-shadow:0 4px 12px rgba(166,116,20,.14)!important;
+  box-shadow:0 4px 12px rgba(42,126,180,.14)!important;
 }}
 .st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"]{{
   padding:7px 10px!important;
 }}
 .st-key-source_file_card .stButton>button{{
   background:#FFFFFF!important;
-  border:1.5px solid #D99A38!important;
-  color:#9B5D00!important;
+  border:1.5px solid #3C95CE!important;
+  color:#17679B!important;
   font-weight:850!important;
-  box-shadow:0 2px 7px rgba(155,93,0,.10)!important;
+  font-size:13.5px!important;
+  white-space:nowrap!important;
+  padding:.35rem .55rem!important;
+  box-shadow:0 2px 7px rgba(23,103,155,.10)!important;
 }}
 .st-key-source_file_card .stButton>button:hover{{
-  background:#FFF4D6!important;
-  border-color:#C9851A!important;
-  color:#7A4800!important;
+  background:#EAF7FF!important;
+  border-color:#2F87C0!important;
+  color:#0D5D91!important;
 }}
 
 .file-pill{{
@@ -896,30 +1028,75 @@ hr{{margin:.45rem 0!important}}
 
 /* Thanh tài khoản */
 .auth-status-pill{{
-  border-radius:999px;padding:5px 9px;text-align:center;font-size:12.8px;font-weight:850;
-  border:1px solid #CFE0F1;background:#F7FBFF;color:#47627E;margin:0 0 6px;
+  border-radius:999px;padding:3px 7px;text-align:center;font-size:12.2px;font-weight:500;
+  border:0;background:transparent;color:#5D7186;margin:2px 0 0;
 }}
-.auth-status-pill.good{{background:#EAF7F1;border-color:#BFE5D6;color:#116B50}}
-.auth-status-pill.warn{{background:#FFF6E7;border-color:#EED9AE;color:#955B00}}
-.auth-status-pill.bad{{background:#FFF0F2;border-color:#EFC5CB;color:#A53240}}
-.auth-status-pill.guest{{background:#F5F7FA;border-color:#DCE3EA;color:#66778A}}
+.auth-status-pill.good{{color:#1D6F5B}}
+.auth-status-pill.warn{{color:#98610A}}
+.auth-status-pill.bad{{color:#A53240}}
+.auth-plan-under{{
+  text-align:center;color:#536A82;font-size:12.6px;font-weight:500;line-height:1.25;margin-top:3px;
+}}
 .view-only-banner{{
   margin:2px 0 8px;padding:7px 11px;border-radius:10px;background:#F8FBFF;
   border:1px solid #D8E7F5;color:#516A84;font-size:13.6px;text-align:center;font-weight:650;
 }}
+.st-key-guest_auth_controls{{margin-top:-2px!important}}
 .st-key-guest_auth_controls [data-testid="stButton"] button{{
   min-height:42px!important;border-radius:10px!important;font-weight:800!important;
 }}
 .st-key-account_controls button{{
-  border-radius:10px!important;font-weight:800!important;
+  border-radius:10px!important;font-weight:800!important;min-height:43px!important;
 }}
+.account-compact{{padding:1px 0 2px}}
+.account-compact-name{{font-size:17px;font-weight:800;color:#263A51}}
+.account-compact-email{{font-size:13px;color:#64809B;margin-top:2px;word-break:break-all}}
+.account-mini-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}}
+.account-mini-card{{border:1px solid #D7E5F3;background:#F8FBFF;border-radius:10px;padding:8px 9px;min-width:0}}
+.account-mini-label{{font-size:11.5px;color:#72859A;font-weight:650;margin-bottom:2px}}
+.account-mini-value{{font-size:13.2px;color:#245B91;font-weight:800;white-space:normal;overflow-wrap:anywhere;line-height:1.25}}
+.account-expiry{{font-size:12.2px;color:#6E7E90;margin:4px 0 2px}}
+
+/* Đăng nhập / đăng ký */
+div[data-testid="stDialog"] [data-testid="stDialogContent"]{{
+  border-radius:18px!important;border:1px solid #D7E6F5!important;box-shadow:0 22px 60px rgba(28,70,110,.18)!important;
+}}
+div[data-testid="stDialog"] [data-testid="stForm"]{{
+  border:0!important;background:#F8FBFF!important;border-radius:13px!important;padding:12px!important;
+}}
+div[data-testid="stDialog"] .stTextInput input{{
+  border:1px solid #C9DDF1!important;border-radius:10px!important;min-height:42px!important;
+}}
+div[data-testid="stDialog"] .stButton>button[kind="primary"],
+div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
+  background:linear-gradient(90deg,#206FC0,#4D9FEA)!important;border:0!important;color:white!important;
+  border-radius:10px!important;font-weight:850!important;min-height:43px!important;
+}}
+.auth-dialog-hero{{
+  display:flex;align-items:center;gap:11px;padding:12px 13px;margin:0 0 10px;
+  background:linear-gradient(120deg,#EAF4FF,#DCEEFF);border:1px solid #C9E0F5;border-radius:13px;
+}}
+.auth-dialog-hero.signup{{background:linear-gradient(120deg,#EDF8FF,#E6F2FF)}}
+.auth-dialog-icon{{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:#fff;font-size:22px;box-shadow:0 4px 12px rgba(36,105,181,.10)}}
+.auth-dialog-title{{font-size:17px;font-weight:900;color:#174A7B;line-height:1.15}}
+.auth-dialog-sub{{font-size:12.5px;color:#607B96;margin-top:3px}}
+.auth-or{{display:flex;align-items:center;gap:8px;color:#8292A3;font-size:12px;margin:10px 0 8px}}
+.auth-or:before,.auth-or:after{{content:"";height:1px;background:#D9E3EC;flex:1}}
+.google-auth-button{{
+  display:flex;align-items:center;justify-content:center;gap:9px;width:100%;min-height:43px;
+  border:1px solid #C9D8E7;border-radius:10px;background:#FFFFFF;color:#23384E!important;
+  font-size:14px;font-weight:800;text-decoration:none!important;box-shadow:0 2px 7px rgba(50,80,110,.05);
+}}
+.google-auth-button:hover{{background:#F7FAFD;border-color:#9FBFD9;text-decoration:none!important}}
+.google-g{{font-size:18px;font-weight:900;color:#4285F4}}
+.auth-security-note{{font-size:11.8px;color:#7B8B9C;text-align:center;margin-top:9px}}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # Header / tài khoản nằm ngoài workspace để vẫn hoạt động ở chế độ xem.
-_head_left, _head_right = st.columns([7.6, 2.4], gap="medium", vertical_alignment="center")
+_head_left, _head_right = st.columns([7.6, 2.4], gap="medium", vertical_alignment="top")
 with _head_left:
     st.markdown(
         """
@@ -945,7 +1122,6 @@ if _AUTH_LOGGED_IN and not _AUTH_CAN_USE:
 
 with _head_right:
     if not _AUTH_LOGGED_IN:
-        st.markdown('<div class="auth-status-pill guest">👁 Chế độ xem</div>', unsafe_allow_html=True)
         with st.container(key="guest_auth_controls"):
             _login_col, _signup_col = st.columns(2, gap="small")
             with _login_col:
@@ -965,20 +1141,19 @@ with _head_right:
         _auth_display = _auth_name or (_auth_email.split("@")[0] if _auth_email else "Tài khoản")
         _auth_plan = str(_AUTH_SUBSCRIPTION.get("plan") or "FREE").upper()
         _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
-        st.markdown(
-            f'<div class="auth-status-pill {_auth_status_class}">● {_auth_status_label} · Gói {_auth_plan}</div>',
-            unsafe_allow_html=True,
-        )
         with st.container(key="account_controls"):
             if hasattr(st, "popover"):
                 with st.popover(f"👤 {_auth_display}", use_container_width=True):
-                    st.markdown(f"**{html.escape(_auth_display)}**")
-                    st.caption(_auth_email)
-                    st.divider()
-                    _m1, _m2 = st.columns(2)
-                    _m1.metric("Gói", _auth_plan)
-                    _m2.metric("Trạng thái", _auth_status_label)
-                    st.caption(f"Hạn sử dụng: {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}")
+                    st.markdown(
+                        f'<div class="account-compact"><div class="account-compact-name">{html.escape(_auth_display)}</div>'
+                        f'<div class="account-compact-email">{html.escape(_auth_email)}</div></div>'
+                        f'<div class="account-mini-grid">'
+                        f'<div class="account-mini-card"><div class="account-mini-label">Gói</div><div class="account-mini-value">{html.escape(_auth_plan)}</div></div>'
+                        f'<div class="account-mini-card"><div class="account-mini-label">Trạng thái</div><div class="account-mini-value">{html.escape(_auth_status_label)}</div></div>'
+                        f'</div>'
+                        f'<div class="account-expiry">Hạn sử dụng: {html.escape(_format_account_date(_AUTH_SUBSCRIPTION.get("expires_at")))}</div>',
+                        unsafe_allow_html=True,
+                    )
                     if _AUTH_VIEW_REASON:
                         st.warning(_AUTH_VIEW_REASON)
                     st.divider()
@@ -988,10 +1163,14 @@ with _head_right:
             else:
                 with st.expander(f"👤 {_auth_display}"):
                     st.write(_auth_email)
-                    st.write(f"Gói: **{_auth_plan}** · {_auth_status_label}")
+                    st.caption(f"Gói {_auth_plan} · {_auth_status_label}")
                     if st.button("Đăng xuất", key="fallback_logout", use_container_width=True):
                         _logout()
                         st.rerun()
+        st.markdown(
+            f'<div class="auth-plan-under">gói {_auth_plan.lower()}</div>',
+            unsafe_allow_html=True,
+        )
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")
@@ -1005,13 +1184,17 @@ if not _AUTH_LOGGED_IN and _inline_auth in {"login", "signup"}:
             st.session_state.pop("auth_inline_panel", None)
             st.rerun()
 
+_oauth_error = st.session_state.pop("auth_oauth_error", "")
+if _oauth_error:
+    st.error(f"Đăng nhập Google chưa hoàn tất: {_oauth_error}")
+
 if st.session_state.pop("auth_just_logged_in", False) and _AUTH_LOGGED_IN:
     _flash_plan = str(_AUTH_SUBSCRIPTION.get("plan") or "FREE").upper()
     _flash_status, _ = _subscription_status(_AUTH_SUBSCRIPTION)
     if hasattr(st, "toast"):
-        st.toast(f"Đăng nhập thành công • {_flash_status} • Gói {_flash_plan}", icon="✅")
+        st.toast(f"Đăng nhập thành công • Gói {_flash_plan}", icon="✅")
     else:
-        st.success(f"Đăng nhập thành công • {_flash_status} • Gói {_flash_plan}")
+        st.success(f"Đăng nhập thành công • Gói {_flash_plan}")
 
 if st.session_state.pop("auth_just_logged_out", False):
     if hasattr(st, "toast"):
@@ -2744,7 +2927,7 @@ with st.container(key="dtmix_workspace"):
                 _left, file_card_col, _right = st.columns([1, 2, 1], gap="small")
                 with file_card_col:
                     with st.container(border=True, key="source_file_card"):
-                        info_col, remove_col = st.columns([3.8, 1.7], gap="small", vertical_alignment="center")
+                        info_col, remove_col = st.columns([3.4, 2.4], gap="small", vertical_alignment="center")
                         with info_col:
                             st.markdown(
                                 f'<div style="font-size:15.5px;font-weight:850;color:#173B65;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📄 {esc(upload_name)}</div>'

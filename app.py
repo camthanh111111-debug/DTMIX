@@ -2141,31 +2141,59 @@ with st.container(border=True):
 
     current_sig = None
     raw = None
+    upload_name = None
+
+    # Mỗi lần xóa đề sẽ tăng phiên bản widget để file cũ không tự quay lại.
+    st.session_state.setdefault("source_docx_version", 0)
+
     with file_col:
         st.markdown('<div class="upload-zone-title">1. 📄 Tải đề cần trộn lên (.docx)</div><div class="upload-zone-sub">Kéo thả hoặc chọn file Word để DTMIX tự động phân tích</div>', unsafe_allow_html=True)
-        uploaded = st.file_uploader(
-            "Đề gốc",
-            type=["docx"],
-            accept_multiple_files=False,
-            key="source_docx",
-            label_visibility="collapsed",
-        )
-        if uploaded:
-            raw = uploaded.getvalue()
 
-            # Khi đã có 1 đề: chỉ giữ hàng thông tin file + nút X của Streamlit.
-            # Ẩn vùng dấu + / thêm file phía dưới. Khi bấm X xóa đề cũ,
-            # Streamlit chạy lại và vùng tải file sẽ tự xuất hiện trở lại.
-            st.markdown(
-                """
-                <style>
-                [data-testid="stFileUploaderDropzone"] {
-                    display:none !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
+        # Chưa có đề: hiện đúng khu vực Upload ban đầu.
+        if "source_docx_bytes" not in st.session_state:
+            uploaded = st.file_uploader(
+                "Đề gốc",
+                type=["docx"],
+                accept_multiple_files=False,
+                key=f"source_docx_{st.session_state['source_docx_version']}",
+                label_visibility="collapsed",
             )
+
+            if uploaded is not None:
+                # Lưu đề vào session rồi chạy lại giao diện. Ở lần chạy sau
+                # uploader sẽ được thay bằng thẻ thông tin file + nút Xóa đề cũ.
+                _raw = uploaded.getvalue()
+                st.session_state["source_docx_bytes"] = _raw
+                st.session_state["source_docx_name"] = uploaded.name
+                st.session_state["source_docx_size"] = len(_raw)
+                st.rerun()
+
+        # Đã có đề: KHÔNG hiện vùng dấu + nữa; chỉ hiện thông tin file và nút xóa.
+        else:
+            raw = st.session_state.get("source_docx_bytes")
+            upload_name = st.session_state.get("source_docx_name", "de_goc.docx")
+            upload_size = int(st.session_state.get("source_docx_size", len(raw or b"")))
+
+            # Thẻ file sau khi tải lên: đặt giữa, rộng tương đương vùng Upload ban đầu.
+            _left, file_card_col, _right = st.columns([1, 2, 1], gap="small")
+            with file_card_col:
+                with st.container(border=True):
+                    info_col, remove_col = st.columns([3.8, 1.7], gap="small", vertical_alignment="center")
+                    with info_col:
+                        st.markdown(
+                            f'<div style="font-size:15.5px;font-weight:850;color:#173B65;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📄 {esc(upload_name)}</div>'
+                            f'<div style="font-size:13.5px;color:#728399;margin-top:3px">{upload_size/1024:.1f} KB • DOCX</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with remove_col:
+                        if st.button("✕ Xóa đề cũ", key="remove_source_docx", use_container_width=True):
+                            clear_engine()
+                            st.session_state.pop("source_docx_bytes", None)
+                            st.session_state.pop("source_docx_name", None)
+                            st.session_state.pop("source_docx_size", None)
+                            st.session_state.pop("pending_mix", None)
+                            st.session_state["source_docx_version"] += 1
+                            st.rerun()
 
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
@@ -2202,7 +2230,7 @@ with st.container(border=True):
             try:
                 eng = DTMIXWebEngine(
                     raw,
-                    uploaded.name,
+                    upload_name,
                     youngmix=is_youngmix,
                     header=header_values(),
                 )

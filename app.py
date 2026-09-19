@@ -2091,11 +2091,10 @@ with st.container(border=True):
             key="source_docx",
             label_visibility="collapsed",
         )
-    if uploaded:
-    raw = uploaded.getvalue()
-    size_kb = len(raw) / 1024
-    st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span> <span style="color: gray; font-size: 0.85em;">({size_kb:.1f} KB)</span>', unsafe_allow_html=True)
-
+        if uploaded:
+            raw = uploaded.getvalue()
+            st.markdown(f'<span class="file-pill">📄 {esc(uploaded.name)}</span>', unsafe_allow_html=True)
+            st.caption(f"{len(raw)/1024:.1f} KB")
 
     with mode_col:
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
@@ -2106,7 +2105,7 @@ with st.container(border=True):
             label_visibility="collapsed",
         )
         is_youngmix = mode.startswith("Kí hiệu nhóm")
-        st.caption("g1: câu • g2: đáp án • g3: cả hai")
+        st.caption("<g1>: đảo câu • <g2>: Đảo phương án • <g3>: cả hai")
 
     with code_col:
         st.markdown('<div class="tool-card-title">3. 🏷️ Mã đề / số lượng</div>', unsafe_allow_html=True)

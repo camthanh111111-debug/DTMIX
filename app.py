@@ -263,7 +263,7 @@ hr{{margin:.45rem 0!important}}
 .analysis-card-meta{{font-size:13.83px;color:#40566F;margin-top:4px;line-height:1.45}}
 .analysis-card-ok{{font-size:13.33px;color:#137A5A;font-weight:800;margin-top:5px}}
 .analysis-card-bad{{font-size:13.33px;color:#B33E35;font-weight:800;margin-top:5px}}
-/* YoungMix cấu hình luôn mở theo hàng ngang */
+/* dtmix cấu hình luôn mở theo hàng ngang */
 .ym-config-head{{font-size:18.33px;font-weight:850;color:#173B65;margin:6px 0 5px}}
 .ym-config-note{{font-size:13.33px;color:#6C8097;margin-bottom:6px}}
 .preview-side-title{{font-size:16.33px;font-weight:850;color:#173B65;margin-bottom:6px}}
@@ -673,9 +673,9 @@ def build_answer_annotation_spec(engine: DTMIXWebEngine) -> dict:
     Mỗi câu có anchor nội dung để DOCX preview ghép đúng câu, tránh nhầm khi
     số câu lặp lại giữa PHẦN I / II / III.
     """
-    spec = {"youngmix": bool(engine.youngmix), "parts": [], "groups": []}
+    spec = {"dtmix": bool(engine.dtmix), "parts": [], "groups": []}
 
-    if not engine.youngmix:
+    if not engine.dtmix:
         for p_idx, part in enumerate(engine.app.parsed_data.get("parts", [])):
             p_type = int(part.get("type", 1))
             q_seq = 0
@@ -741,9 +741,9 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
     NS = {"w": W}
     stats = {"converted_wmf_emf": 0, "wmf_emf_total": 0, "answer_marks": 0}
     try:
-        spec = json.loads(annotation_json) if annotation_json else {"youngmix": False, "parts": [], "groups": []}
+        spec = json.loads(annotation_json) if annotation_json else {"dtmix": False, "parts": [], "groups": []}
     except Exception:
-        spec = {"youngmix": False, "parts": [], "groups": []}
+        spec = {"dtmix": False, "parts": [], "groups": []}
 
     def _run_text(run):
         return "".join((t.text or "") for t in run.xpath(".//w:t", namespaces=NS))
@@ -922,7 +922,7 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
 
         _neutralize_existing_red(root)
 
-        mode = "ym" if spec.get("youngmix") else "std"
+        mode = "ym" if spec.get("dtmix") else "std"
         units = spec.get("groups" if mode == "ym" else "parts", [])
         current_unit = 0
         question_seq = -1
@@ -961,8 +961,8 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
                         question_seq = -1
                         current_question = None
             else:
-                # Với YoungMix có tag thật: mỗi <g0>...<g4> mở một group mới.
-                # Với YoungMix "Tự động" không có tag: giữ nguyên 1 group và đi tuần tự toàn đề.
+                # Với dtmix có tag thật: mỗi <g0>...<g4> mở một group mới.
+                # Với dtmix "Tự động" không có tag: giữ nguyên 1 group và đi tuần tự toàn đề.
                 if re.search(r'(?i)<\s*#?g[0-4]\s*>', full):
                     if seen_ym_tag:
                         current_unit = min(current_unit + 1, max(0, len(units) - 1))
@@ -1094,7 +1094,7 @@ def _prepare_browser_preview_docx(file_bytes: bytes, signature: str, annotation_
 def _build_exact_export_goc_preview(
     file_bytes: bytes,
     filename: str,
-    youngmix: bool,
+    dtmix: bool,
     header_json: str,
 ) -> tuple[bytes, str]:
     """
@@ -1108,7 +1108,7 @@ def _build_exact_export_goc_preview(
         temp_engine = DTMIXWebEngine(
             file_bytes,
             filename,
-            youngmix=bool(youngmix),
+            dtmix=bool(dtmix),
             header=header,
         )
         result = temp_engine.mix(["111"])
@@ -1141,7 +1141,7 @@ def browser_docx_preview(engine: DTMIXWebEngine, key_prefix: str, height: int = 
     preview_bytes, preview_error = _build_exact_export_goc_preview(
         engine.file_bytes,
         engine.filename,
-        engine.youngmix,
+        engine.dtmix,
         header_json,
     )
     b64 = base64.b64encode(preview_bytes).decode("ascii")
@@ -1298,7 +1298,7 @@ def exact_word_preview(engine: DTMIXWebEngine, key_prefix: str) -> None:
         goc_bytes, goc_error = _build_exact_export_goc_preview(
             engine.file_bytes,
             engine.filename,
-            engine.youngmix,
+            engine.dtmix,
             header_json,
         )
         pdf_bytes, err = _docx_to_pdf_bytes(
@@ -1788,7 +1788,7 @@ def rich_standard_part_html(engine: DTMIXWebEngine, part_idx: int | None, show_k
     return "".join(chunks)
 
 
-def rich_youngmix_group_html(engine: DTMIXWebEngine, group_idx: int, show_key: bool) -> str:
+def rich_dtmix_group_html(engine: DTMIXWebEngine, group_idx: int, show_key: bool) -> str:
     all_mucs = [m for p in engine.app.parsed_data.get("parts", []) for m in p.get("mucs", [])]
     if group_idx < 0 or group_idx >= len(all_mucs):
         return '<div class="doc-page"><div class="doc-empty">Không tìm thấy nội dung nhóm.</div></div>'
@@ -1981,7 +1981,7 @@ def audit_standard(engine: DTMIXWebEngine, preview_rows: list[dict]) -> list[dic
     return issues
 
 
-def youngmix_mode_label(mix_type: str) -> str:
+def dtmix_mode_label(mix_type: str) -> str:
     return {
         "Không hoán vị": "g0 · Không hoán vị",
         "Chỉ câu hỏi": "g1 · Chỉ trộn câu hỏi",
@@ -2084,7 +2084,7 @@ def run_mix(engine, codes, std_cfg=None, ym_cfg=None) -> None:
             codes,
             header=header_values(),
             standard_config=std_cfg,
-            youngmix_config=ym_cfg,
+            dtmix_config=ym_cfg,
         )
         progress.progress(100, text="Hoàn tất — đang tải ZIP...")
         st.session_state.mix_result = result
@@ -2227,16 +2227,16 @@ with st.container(border=True):
             key="dtmix_mode",
             label_visibility="collapsed",
         )
-        is_youngmix = mode.startswith("Kí hiệu nhóm")
+        is_dtmix = mode.startswith("Kí hiệu nhóm")
         st.caption("<g1>: đảo câu • <g2>: Đảo phương án • <g3>: cả hai")
 
     with code_col:
         st.markdown('<div class="tool-card-title">3. 🏷️ Số lượng đề / Kiểu mã đề</div>', unsafe_allow_html=True)
-        top_codes = compact_codes_ui("ym_top" if is_youngmix else "std_top")
+        top_codes = compact_codes_ui("ym_top" if is_dtmix else "std_top")
 
     # Xác định engine hiện tại có đúng file/chế độ không
     if raw is not None:
-        current_sig = hashlib.sha256(raw + str(is_youngmix).encode()).hexdigest()
+        current_sig = hashlib.sha256(raw + str(is_dtmix).encode()).hexdigest()
 
     existing_engine = st.session_state.get("dtmix_engine")
     engine_ready = bool(
@@ -2255,7 +2255,7 @@ with st.container(border=True):
                 eng = DTMIXWebEngine(
                     raw,
                     upload_name,
-                    youngmix=is_youngmix,
+                    dtmix=is_dtmix,
                     header=header_values(),
                 )
                 st.session_state.dtmix_engine = eng
@@ -2292,7 +2292,7 @@ def _summary_question_label(q: dict, fallback: int) -> str:
 if engine:
     summary = engine.summary()
     parts = summary.get("parts", [])
-    unit_count = len(summary.get("youngmix_groups", [])) if engine.youngmix else len(parts)
+    unit_count = len(summary.get("dtmix_groups", [])) if engine.dtmix else len(parts)
     st.markdown(
         f"""
 <div class="summary-compact">
@@ -2307,7 +2307,7 @@ if engine:
 
     # -------- PHÂN TÍCH CHI TIẾT: luôn nằm trên xem trước --------
     detail_cards = []
-    if not engine.youngmix:
+    if not engine.dtmix:
         roman = {1:"PHẦN I",2:"PHẦN II",3:"PHẦN III",4:"PHẦN IV"}
         for part in parts:
             total = part["question_count"]
@@ -2332,7 +2332,7 @@ if engine:
                 f'{status}</div>'
             )
     else:
-        ym_groups = summary.get("youngmix_groups", [])
+        ym_groups = summary.get("dtmix_groups", [])
         flat = [g for p in parts for g in p.get("groups", [])]
         for i, yg in enumerate(ym_groups):
             sg = flat[i] if i < len(flat) else {"questions": [], "question_count": yg.get("question_count",0)}
@@ -2385,7 +2385,7 @@ if engine:
         st.session_state["pending_codes"] = top_codes
 
     # -------- CẤU HÌNH TRỘN: cũng đặt trên preview --------
-    if not engine.youngmix:
+    if not engine.dtmix:
         st.markdown('<div class="auto-config-title">⚙️ Cấu hình trộn tự động</div>', unsafe_allow_html=True)
         keep_titles = st.checkbox("Giữ tiêu đề nhóm/mục", value=False, key="std_keep_titles_v64")
         std_groups = {}
@@ -2411,9 +2411,9 @@ if engine:
                     std_groups[f"{g['p_idx']}:{g['m_idx']}"]={"shuffle_questions":shuffle_q,"pick":int(pick),"fixed_questions":fixed,"shuffle_group_order":shuffle_group}
         std_config={"keep_group_titles":keep_titles,"groups":std_groups}
     else:
-        groups=summary.get("youngmix_groups",[])
-        st.markdown('<div class="ym-config-head">🩺 Rà soát & cấu hình YoungMix</div>', unsafe_allow_html=True)
-        st.markdown('<div class="ym-config-note">Cấu trúc, số câu, tình trạng đáp án và toàn bộ tùy chọn YoungMix được đặt ở đây trước phần xem trước.</div>', unsafe_allow_html=True)
+        groups=summary.get("dtmix_groups",[])
+        st.markdown('<div class="ym-config-head">🩺 Rà soát & cấu hình dtmix</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ym-config-note">Cấu trúc, số câu, tình trạng đáp án và toàn bộ tùy chọn dtmix được đặt ở đây trước phần xem trước.</div>', unsafe_allow_html=True)
         y0,y1,y2=st.columns([1.55,1.65,2.8],gap="small")
         with y0:
             continuous=st.toggle("Đánh số câu liên tục giữa các nhóm",value=False,key="ym_cont_v64")
@@ -2435,7 +2435,7 @@ if engine:
                 with c1:
                     q_type=st.selectbox("Loại câu",type_opts,index=type_opts.index(default_type),key=f"ym_type_v64_{i}",label_visibility="collapsed")
                 modes=["g0 · Không hoán vị","g1 · Chỉ trộn câu hỏi","g2 · Chỉ trộn đáp án","g3 · Trộn câu hỏi + đáp án"]
-                dm=youngmix_mode_label(g["mix_type"]); dm=dm if dm in modes else modes[-1]
+                dm=dtmix_mode_label(g["mix_type"]); dm=dm if dm in modes else modes[-1]
                 with c2:
                     mix_label=st.selectbox("Cách trộn",modes,index=modes.index(dm),key=f"ym_mode_v64_{i}",label_visibility="collapsed")
                 with c3:
@@ -2476,7 +2476,7 @@ else:
 if engine and st.session_state.get("pending_mix"):
     st.session_state["pending_mix"] = False
     _codes = st.session_state.get("pending_codes", [])
-    if engine.youngmix:
+    if engine.dtmix:
         run_mix(engine, _codes, ym_cfg=ym_config)
     else:
         run_mix(engine, _codes, std_cfg=std_config)
@@ -2500,7 +2500,7 @@ with st.expander("📖 Hướng dẫn sử dụng DTMIX chi tiết", expanded=Fa
   - **Tự động PHẦN I–IV:** phù hợp khi đề đã chia sẵn theo các phần.
   - **Kí hiệu nhóm g1/g2/g3/g4:** dùng khi muốn kiểm soát cách đảo theo từng nhóm câu hỏi.
 
-### 3. Quy ước nhóm YoungMix
+### 3. Quy ước nhóm dtmix
 - `g0`: giữ nguyên, **không hoán vị**.
 - `g1`: **chỉ hoán vị thứ tự câu hỏi** trong nhóm.
 - `g2`: **chỉ hoán vị phương án/đáp án** của từng câu.

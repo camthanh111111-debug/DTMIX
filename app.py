@@ -53,7 +53,7 @@ st.set_page_config(
 #   DTMIX_PUBLIC_URL = "https://dtmix.a1dbm.io.vn/"
 #   DTMIX_OAUTH_STATE_SECRET = "..."
 
-FREE_MIX_LIMIT = 3
+FREE_MIX_LIMIT = 30
 PLAN_PRICES_VND = {"YEAR1": 50_000, "YEAR2": 100_000}
 PAID_PLANS = {"YEAR", "YEAR1", "YEAR2"}
 

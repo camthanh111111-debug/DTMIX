@@ -794,7 +794,11 @@ def _upgrade_body() -> None:
             req = _request_upgrade(chosen)
             st.session_state["payment_request"] = req
         except DTMIXAuthError as exc:
-            st.error(str(exc))
+            _err = str(exc)
+            if "ambiguous" in _err.lower() and "status" in _err.lower():
+                st.error("Cấu hình thanh toán trên Supabase cần cập nhật. Hãy chạy file SQL sửa thanh toán mới rồi thử lại.")
+            else:
+                st.error(_err)
 
     req = st.session_state.get("payment_request") or _load_pending_upgrade_request()
     if req:
@@ -1329,18 +1333,22 @@ hr{{margin:.45rem 0!important}}
 .st-key-guest_auth_controls [data-testid="stButton"] button{{
   min-height:42px!important;border-radius:10px!important;font-weight:800!important;
 }}
-.st-key-account_controls{{
-  width:100%!important;max-width:285px!important;margin-left:auto!important;
+ .st-key-account_controls{{
+  width:100%!important;max-width:255px!important;margin-left:auto!important;
   background:#FFFFFF!important;border:1px solid #C9D8E7!important;border-radius:13px!important;
-  padding:2px 8px 5px!important;box-shadow:0 2px 8px rgba(41,73,104,.04)!important;
+  padding:0!important;box-shadow:0 2px 8px rgba(41,73,104,.04)!important;overflow:hidden!important;
 }}
-.st-key-account_controls [data-testid="stVerticalBlock"]{{gap:.12rem!important}}
+.st-key-account_controls [data-testid="stVerticalBlock"]{{gap:0!important}}
 .st-key-account_controls button{{
-  border:0!important;background:transparent!important;box-shadow:none!important;
-  border-radius:9px!important;font-weight:800!important;min-height:34px!important;padding:.22rem .45rem!important;
+  width:100%!important;border:0!important;background:transparent!important;box-shadow:none!important;
+  border-radius:12px!important;font-weight:800!important;min-height:50px!important;height:auto!important;
+  padding:.38rem .55rem!important;white-space:normal!important;
+}}
+.st-key-account_controls button p{{
+  margin:0!important;white-space:normal!important;line-height:1.18!important;font-size:13.1px!important;
+  text-align:center!important;overflow-wrap:anywhere!important;
 }}
 .st-key-account_controls button:hover{{background:#F3F8FE!important}}
-.st-key-account_controls .auth-plan-under{{margin:0!important;padding:0 3px 1px!important;font-size:11.7px!important;line-height:1.15!important;white-space:normal!important}}
 .account-compact{{padding:1px 0 2px}}
 .account-compact-name{{font-size:17px;font-weight:800;color:#263A51}}
 .account-compact-email{{font-size:13px;color:#64809B;margin-top:2px;word-break:break-all}}
@@ -1356,16 +1364,16 @@ hr{{margin:.45rem 0!important}}
 .upgrade-price{{font-size:25px;color:#176BCE;font-weight:900;line-height:1.15;margin:4px 0}}
 .upgrade-note{{font-size:12px;color:#718398;line-height:1.35}}
 .free-usage-bar{{font-size:12.2px;color:#536A82;margin-top:4px;text-align:center}}
-.payment-title{{font-size:15.5px;font-weight:900;color:#174A7B;text-align:center;margin:12px 0 2px}}
+.payment-title{{font-size:16px;font-weight:900;color:#174A7B;text-align:center;margin:12px 0 2px}}
 .payment-sub{{font-size:12.2px;color:#657D95;text-align:center;margin-bottom:8px}}
-.payment-info{{border:1px solid #D4E4F2;background:#F8FBFF;border-radius:12px;padding:8px 10px}}
+.payment-info{{border:1px solid #C9DFF2;background:linear-gradient(180deg,#F9FCFF,#EEF7FF);border-radius:12px;padding:8px 10px;box-shadow:0 3px 10px rgba(42,87,128,.05)}}
 .payment-info>div{{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #E6EEF6;font-size:12.1px}}
 .payment-info>div:last-child{{border-bottom:0}}
 .payment-info span{{color:#718499;flex:0 0 42%}}
 .payment-info b{{color:#284A6B;text-align:right;overflow-wrap:anywhere}}
 .payment-info .payment-code{{color:#0B66C3;font-size:13px;letter-spacing:.2px}}
-@media(max-width:1150px){{.st-key-account_controls{{max-width:250px!important}}}}
-@media(max-width:850px){{.st-key-account_controls{{max-width:none!important}}}}
+@media(max-width:1150px){{.st-key-account_controls{{max-width:235px!important}}}}
+@media(max-width:850px){{.st-key-account_controls{{max-width:100%!important}}}}
 @media(max-width:700px){{.upgrade-grid{{grid-template-columns:1fr}}}}
 
 /* Đăng nhập / đăng ký */
@@ -1407,7 +1415,7 @@ div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
 )
 
 # Header / tài khoản nằm ngoài workspace để vẫn hoạt động ở chế độ xem.
-_head_left, _head_right = st.columns([8.25, 1.75], gap="medium", vertical_alignment="top")
+_head_left, _head_right = st.columns([8.6, 1.4], gap="medium", vertical_alignment="top")
 with _head_left:
     st.markdown(
         """
@@ -1452,9 +1460,15 @@ with _head_right:
         _auth_plan_code = _plan_code(_AUTH_SUBSCRIPTION)
         _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
         _free_remaining = _free_mix_remaining(_AUTH_USAGE)
+        if _auth_plan_code == "FREE":
+            _account_meta = f"Gói FREE · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
+        else:
+            _account_meta = f"Gói {_auth_plan} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
+        _account_label = f"👤 {_auth_display} · {_account_meta}"
+
         with st.container(key="account_controls"):
             if hasattr(st, "popover"):
-                with st.popover(f"👤 {_auth_display}", use_container_width=True):
+                with st.popover(_account_label, use_container_width=True):
                     st.markdown(
                         f'<div class="account-compact"><div class="account-compact-name">{html.escape(_auth_display)}</div>'
                         f'<div class="account-compact-email">{html.escape(_auth_email)}</div></div>'
@@ -1477,20 +1491,12 @@ with _head_right:
                         _logout()
                         st.rerun()
             else:
-                with st.expander(f"👤 {_auth_display}"):
+                with st.expander(_account_label):
                     st.write(_auth_email)
                     st.caption(f"Gói {_auth_plan} · {_auth_status_label}")
                     if st.button("Đăng xuất", key="fallback_logout", use_container_width=True):
                         _logout()
                         st.rerun()
-            if _auth_plan_code == "FREE":
-                _under_text = f"gói free · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
-            else:
-                _under_text = f"gói {_auth_plan.lower()} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
-            st.markdown(
-                f'<div class="auth-plan-under">{html.escape(_under_text)}</div>',
-                unsafe_allow_html=True,
-            )
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")

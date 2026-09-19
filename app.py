@@ -438,7 +438,7 @@ hr{{margin:.45rem 0!important}}
 /* Thẻ đề đã tải lên: nền kem vàng nhạt để nổi bật, dễ nhận biết */
 .st-key-source_file_card [data-testid="stVerticalBlockBorderWrapper"],
 .st-key-source_file_card{{
-  background:linear-gradient(135deg,#FFF9E8,#2196F3)!important;
+  background:linear-gradient(135deg,#FFF9E8,#0066CC)!important;
   border:1.5px solid #E9BD55!important;
   border-radius:14px!important;
   box-shadow:0 4px 12px rgba(166,116,20,.14)!important;

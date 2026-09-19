@@ -354,7 +354,7 @@ hr{{margin:.45rem 0!important}}
 }}
 .upload-zone-sub{{
   color:#50708F;
-  font-size:12.5px;
+  font-size:13.5px;
   text-align:center;
   margin-bottom:6px;
 }}
@@ -2100,11 +2100,11 @@ with st.container(border=True):
         st.markdown('<div class="tool-card-title">2. ⚙️ Chế độ xử lý</div>', unsafe_allow_html=True)
         mode = st.radio(
             "Chế độ",
-            ["Tự động PHẦN I–IV", "YoungMix g1/g2/g3/g4"],
+            ["Tự động PHẦN I–IV", "Kí hiệu nhóm g1/g2/g3/g4"],
             key="dtmix_mode",
             label_visibility="collapsed",
         )
-        is_youngmix = mode.startswith("YoungMix")
+        is_youngmix = mode.startswith("Kí hiệu nhóm")
         st.caption("g1: câu • g2: đáp án • g3: cả hai")
 
     with code_col:

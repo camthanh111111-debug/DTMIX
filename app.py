@@ -414,10 +414,10 @@ hr{{margin:.45rem 0!important}}
 }}
 /* Đưa thông tin dung lượng/định dạng lên ngay sau chữ Upload */
 [data-testid="stFileUploaderDropzone"] button::after{{
-  content:"  • 100MB per file • DOCX";
+  content:"  • 100MB per file • docx";
   color:#667D94!important;
   font-size:12.6px!important;
-  font-weight:650!important;
+  font-weight:350!important;
   margin-left:8px!important;
 }}
 .file-pill{{

@@ -53,7 +53,7 @@ st.set_page_config(
 #   DTMIX_PUBLIC_URL = "https://dtmix.a1dbm.io.vn/"
 #   DTMIX_OAUTH_STATE_SECRET = "..."
 
-FREE_MIX_LIMIT = 30
+FREE_MIX_LIMIT = 3
 PLAN_PRICES_VND = {"YEAR1": 50_000, "YEAR2": 100_000}
 PAID_PLANS = {"YEAR", "YEAR1", "YEAR2"}
 
@@ -509,6 +509,36 @@ def _admin_reject_upgrade(request_id: int) -> dict:
     return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
 
 
+def _admin_users() -> list[dict]:
+    """Danh sách tài khoản dành riêng cho quản trị viên DTMIX."""
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        return []
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_admin_users",
+        method="POST",
+        payload={},
+        access_token=token,
+    )
+    return [dict(x) for x in data] if isinstance(data, list) else []
+
+
+def _admin_set_user_plan(user_id: str, plan: str) -> dict:
+    token = st.session_state.get("auth_access_token")
+    if not token:
+        raise DTMIXAuthError("Bạn chưa đăng nhập.")
+    plan = str(plan or "").upper()
+    if plan not in {"FREE", "YEAR1", "YEAR2"}:
+        raise DTMIXAuthError("Gói cấp cho tài khoản không hợp lệ.")
+    data = _supabase_json(
+        "/rest/v1/rpc/dtmix_admin_set_plan",
+        method="POST",
+        payload={"p_user_id": str(user_id), "p_plan": plan},
+        access_token=token,
+    )
+    return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+
+
 def _format_money_vnd(value) -> str:
     try:
         return f"{int(value):,}".replace(",", ".") + "đ"
@@ -904,7 +934,7 @@ def _login_form_body() -> None:
                 st.rerun()
             except DTMIXAuthError as exc:
                 st.error(str(exc))
-    if st.button("Quên mật khẩu?", key="auth_open_forgot_password", use_container_width=True):
+    if st.button("🔑 Quên mật khẩu?", key="auth_open_forgot_password", use_container_width=True):
         st.session_state["auth_show_forgot_password"] = True
         st.rerun()
     _render_google_login_button()
@@ -1045,7 +1075,117 @@ def _upgrade_body() -> None:
         _render_payment_request(req)
     else:
         st.caption("Chọn một gói để tạo mã QR thanh toán. Mỗi yêu cầu có nội dung chuyển khoản riêng để đối soát.")
-    st.caption("Gói FREE: 3 lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
+    st.caption(f"Gói FREE: {FREE_MIX_LIMIT} lượt trộn thành công cho mỗi tài khoản. Gói trả phí: không giới hạn lượt trộn trong thời hạn gói.")
+
+
+def _admin_users_body() -> None:
+    if not _is_admin():
+        st.error("Tài khoản này không có quyền quản trị DTMIX.")
+        return
+
+    st.markdown(
+        '<div class="auth-dialog-hero"><div class="auth-dialog-icon">👥</div>'
+        '<div><div class="auth-dialog-title">Quản trị tài khoản</div>'
+        '<div class="auth-dialog-sub">Tìm người dùng, cấp gói và gửi liên kết đặt lại mật khẩu.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        rows = _admin_users()
+    except DTMIXAuthError as exc:
+        st.error(str(exc))
+        return
+
+    if not rows:
+        st.info("Chưa có tài khoản người dùng để quản lý.")
+        return
+
+    q = st.text_input(
+        "Tìm tài khoản",
+        placeholder="Nhập email hoặc họ tên...",
+        key="admin_user_search",
+    ).strip().lower()
+    filtered = rows
+    if q:
+        filtered = [
+            r for r in rows
+            if q in str(r.get("email") or "").lower()
+            or q in str(r.get("full_name") or "").lower()
+        ]
+
+    if not filtered:
+        st.warning("Không tìm thấy tài khoản phù hợp.")
+        return
+
+    def _user_option_label(r: dict) -> str:
+        name = str(r.get("full_name") or "").strip()
+        email = str(r.get("email") or "").strip()
+        return f"{name} · {email}" if name else email
+
+    options = list(range(len(filtered)))
+    selected_idx = st.selectbox(
+        "Chọn tài khoản",
+        options,
+        format_func=lambda i: _user_option_label(filtered[i]),
+        key="admin_user_select",
+    )
+    user = filtered[int(selected_idx)]
+    uid = str(user.get("user_id") or "")
+    email = str(user.get("email") or "")
+    full_name = str(user.get("full_name") or "").strip() or "Chưa cập nhật"
+    provider = str(user.get("provider") or "email")
+    plan = str(user.get("plan") or "FREE").upper()
+    status = str(user.get("subscription_status") or "active")
+    used = int(user.get("successful_mixes") or 0)
+    expiry = _format_account_date(user.get("expires_at"))
+
+    plan_name = {"FREE": "FREE", "YEAR": "PRO 1 năm", "YEAR1": "PRO 1 năm", "YEAR2": "PRO 2 năm", "ADMIN": "ADMIN"}.get(plan, plan)
+    with st.container(border=True):
+        st.markdown(f"**{html.escape(full_name)}**  \n{html.escape(email)}")
+        c1, c2, c3 = st.columns(3, gap="small")
+        c1.metric("Gói", plan_name)
+        c2.metric("Trạng thái", status)
+        c3.metric("Đăng nhập", provider)
+        if plan == "FREE":
+            st.caption(f"Lượt miễn phí đã dùng: {used}/{FREE_MIX_LIMIT} · còn {max(0, FREE_MIX_LIMIT-used)} lượt")
+        else:
+            st.caption(f"Hạn sử dụng: {expiry}")
+
+    st.markdown("**Cấp / đổi gói sử dụng**")
+    grant = st.selectbox(
+        "Gói áp dụng",
+        ["FREE", "YEAR1", "YEAR2"],
+        format_func=lambda x: {
+            "FREE": f"FREE — cấp lại {FREE_MIX_LIMIT} lượt miễn phí",
+            "YEAR1": "PRO 1 năm — quản trị cấp miễn phí",
+            "YEAR2": "PRO 2 năm — quản trị cấp miễn phí",
+        }[x],
+        key="admin_grant_plan",
+    )
+    g1, g2 = st.columns([1.35, 1], gap="small")
+    with g1:
+        if st.button("✓ Áp dụng gói cho tài khoản", type="primary", use_container_width=True, key="admin_apply_plan"):
+            try:
+                result = _admin_set_user_plan(uid, grant)
+                new_plan = str(result.get("plan") or grant)
+                new_expiry = _format_account_date(result.get("expires_at"))
+                if new_plan == "FREE":
+                    st.success(f"Đã chuyển {email} về FREE và cấp lại {FREE_MIX_LIMIT} lượt miễn phí.")
+                else:
+                    st.success(f"Đã cấp {'1 năm' if new_plan == 'YEAR1' else '2 năm'} PRO cho {email}. Hạn mới: {new_expiry}.")
+                st.rerun()
+            except DTMIXAuthError as exc:
+                st.error(str(exc))
+    with g2:
+        if st.button("🔑 Gửi email đặt lại mật khẩu", use_container_width=True, key="admin_send_password_reset"):
+            try:
+                _request_password_recovery(email)
+                st.success(f"Đã gửi liên kết đặt lại mật khẩu tới {email}.")
+            except DTMIXAuthError as exc:
+                st.error(str(exc))
+
+    st.caption(
+        "Bảo mật: quản trị viên không xem hoặc đặt hộ mật khẩu mới. Nút đặt lại mật khẩu gửi liên kết bảo mật trực tiếp tới email của người dùng."
+    )
 
 
 def _admin_payments_body() -> None:
@@ -1154,6 +1294,10 @@ if hasattr(st, "dialog"):
     def _upgrade_dialog():
         _upgrade_body()
 
+    @st.dialog("Quản trị tài khoản", width="large")
+    def _admin_users_dialog():
+        _admin_users_body()
+
     @st.dialog("Quản trị thanh toán", width="large")
     def _admin_payments_dialog():
         _admin_payments_body()
@@ -1176,6 +1320,10 @@ else:
 
     def _upgrade_dialog():
         st.session_state["auth_inline_panel"] = "upgrade"
+        st.rerun()
+
+    def _admin_users_dialog():
+        st.session_state["auth_inline_panel"] = "admin_users"
         st.rerun()
 
     def _admin_payments_dialog():
@@ -1683,23 +1831,30 @@ hr{{margin:.45rem 0!important}}
   margin:2px 0 8px;padding:7px 11px;border-radius:10px;background:#F8FBFF;
   border:1px solid #D8E7F5;color:#516A84;font-size:13.6px;text-align:center;font-weight:650;
 }}
-.st-key-guest_auth_controls{{margin-top:-2px!important}}
+.st-key-guest_auth_controls{{margin-top:-4px!important;width:100%!important}}
+.st-key-guest_auth_controls [data-testid="stHorizontalBlock"]{{gap:.35rem!important;flex-wrap:nowrap!important}}
+.st-key-guest_auth_controls [data-testid="column"]{{min-width:0!important}}
 .st-key-guest_auth_controls [data-testid="stButton"] button{{
-  min-height:42px!important;border-radius:10px!important;font-weight:800!important;
+  min-height:40px!important;border-radius:10px!important;font-weight:800!important;
+  padding:.38rem .38rem!important;width:100%!important;
+}}
+.st-key-guest_auth_controls [data-testid="stButton"] button p{{
+  white-space:nowrap!important;overflow:visible!important;text-overflow:clip!important;
+  font-size:clamp(11.4px,.82vw,13.6px)!important;line-height:1.05!important;
 }}
  .st-key-account_controls{{
-  width:100%!important;max-width:255px!important;margin-left:auto!important;
+  width:100%!important;max-width:205px!important;margin-left:auto!important;
   background:#FFFFFF!important;border:1px solid #C9D8E7!important;border-radius:13px!important;
   padding:0!important;box-shadow:0 2px 8px rgba(41,73,104,.04)!important;overflow:hidden!important;
 }}
 .st-key-account_controls [data-testid="stVerticalBlock"]{{gap:0!important}}
 .st-key-account_controls button{{
   width:100%!important;border:0!important;background:transparent!important;box-shadow:none!important;
-  border-radius:12px!important;font-weight:800!important;min-height:50px!important;height:auto!important;
-  padding:.38rem .55rem!important;white-space:normal!important;
+  border-radius:12px!important;font-weight:800!important;min-height:48px!important;height:auto!important;
+  padding:.30rem .48rem!important;white-space:normal!important;
 }}
 .st-key-account_controls button p{{
-  margin:0!important;white-space:normal!important;line-height:1.18!important;font-size:13.1px!important;
+  margin:0!important;white-space:pre-line!important;line-height:1.14!important;font-size:12.8px!important;
   text-align:center!important;overflow-wrap:anywhere!important;
 }}
 .st-key-account_controls button:hover{{background:#F3F8FE!important}}
@@ -1726,7 +1881,7 @@ hr{{margin:.45rem 0!important}}
 .payment-info span{{color:#718499;flex:0 0 42%}}
 .payment-info b{{color:#284A6B;text-align:right;overflow-wrap:anywhere}}
 .payment-info .payment-code{{color:#0B66C3;font-size:13px;letter-spacing:.2px}}
-@media(max-width:1150px){{.st-key-account_controls{{max-width:235px!important}}}}
+@media(max-width:1150px){{.st-key-account_controls{{max-width:195px!important}}}}
 @media(max-width:850px){{.st-key-account_controls{{max-width:100%!important}}}}
 @media(max-width:700px){{.upgrade-grid{{grid-template-columns:1fr}}}}
 
@@ -1745,6 +1900,10 @@ div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
   background:linear-gradient(90deg,#206FC0,#4D9FEA)!important;border:0!important;color:white!important;
   border-radius:10px!important;font-weight:850!important;min-height:43px!important;
 }}
+div[data-testid="stDialog"] .stButton>button{{
+  white-space:normal!important;height:auto!important;min-height:39px!important;padding:.42rem .65rem!important;
+}}
+div[data-testid="stDialog"] .stButton>button p{{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}}
 .auth-dialog-hero{{
   display:flex;align-items:center;gap:11px;padding:12px 13px;margin:0 0 10px;
   background:linear-gradient(120deg,#EAF4FF,#DCEEFF);border:1px solid #C9E0F5;border-radius:13px;
@@ -1769,7 +1928,7 @@ div[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button{{
 )
 
 # Header / tài khoản nằm ngoài workspace để vẫn hoạt động ở chế độ xem.
-_head_left, _head_right = st.columns([8.6, 1.4], gap="medium", vertical_alignment="top")
+_head_left, _head_right = st.columns([8.15, 1.85], gap="medium", vertical_alignment="top")
 with _head_left:
     st.markdown(
         """
@@ -1815,11 +1974,9 @@ with _head_right:
         _auth_status_label, _auth_status_class = _subscription_status(_AUTH_SUBSCRIPTION)
         _auth_is_admin = _is_admin()
         _free_remaining = _free_mix_remaining(_AUTH_USAGE)
-        if _auth_plan_code == "FREE":
-            _account_meta = f"Gói FREE · còn {_free_remaining}/{FREE_MIX_LIMIT} lượt"
-        else:
-            _account_meta = f"Gói {_auth_plan} · đến {_format_account_date(_AUTH_SUBSCRIPTION.get('expires_at'))}"
-        _account_label = f"👤 {_auth_display} · {_account_meta}"
+        _account_tier = "Free" if _auth_plan_code == "FREE" else "Pro"
+        # Hai dòng gọn: tên tài khoản ở trên, chỉ Free/Pro ở dưới.
+        _account_label = f"👤 {_auth_display}  \n{_account_tier}"
 
         with st.container(key="account_controls"):
             if hasattr(st, "popover"):
@@ -1843,7 +2000,9 @@ with _head_right:
                             _upgrade_dialog()
                     if _auth_is_admin:
                         st.success("🛡️ Quyền quản trị DTMIX")
-                        if st.button("🛡️ Quản trị thanh toán", key="popover_admin_payments", use_container_width=True):
+                        if st.button("👥 Quản trị tài khoản", key="popover_admin_users", use_container_width=True):
+                            _admin_users_dialog()
+                        if st.button("💳 Quản trị thanh toán", key="popover_admin_payments", use_container_width=True):
                             _admin_payments_dialog()
                     st.divider()
                     if st.button("↪ Đăng xuất", key="popover_logout", use_container_width=True):
@@ -1859,7 +2018,7 @@ with _head_right:
 
 # Fallback cho Streamlit cũ không có dialog.
 _inline_auth = st.session_state.get("auth_inline_panel")
-if _inline_auth in {"login", "signup", "forgot", "reset", "upgrade", "admin_payments"}:
+if _inline_auth in {"login", "signup", "forgot", "reset", "upgrade", "admin_users", "admin_payments"}:
     with st.container(border=True):
         if _inline_auth == "login":
             _login_form_body()
@@ -1871,6 +2030,8 @@ if _inline_auth in {"login", "signup", "forgot", "reset", "upgrade", "admin_paym
             _reset_password_body()
         elif _inline_auth == "upgrade":
             _upgrade_body()
+        elif _inline_auth == "admin_users":
+            _admin_users_body()
         else:
             _admin_payments_body()
         if st.button("Đóng", key="close_inline_auth"):

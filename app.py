@@ -421,6 +421,11 @@ hr{{margin:.45rem 0!important}}
   color:#0B66C3!important;
   fill:currentColor!important;
   stroke:currentColor!important;
+
+  background:#DCEEFF!important;
+  border-radius:50%!important;
+  padding:4px!important;
+  box-shadow:0 2px 6px rgba(11,102,195,.16)!important;
 }}
 /* Đưa thông tin dung lượng/định dạng lên ngay sau chữ Upload */
 [data-testid="stFileUploaderDropzone"] button::after{{

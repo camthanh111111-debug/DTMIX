@@ -4,47 +4,114 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DTMIX Online</title>
+
   <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#fff; }
-    iframe { position:fixed; inset:0; width:100%; height:100dvh; border:0; background:#fff; }
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    /* Khung ngoài chỉ hiển thị đúng phần màn hình */
+    #dtmix-wrap {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    /* Cho iframe cao hơn màn hình 45px
+       để thanh "Built with Streamlit / Fullscreen"
+       bị đẩy xuống dưới và bị khung ngoài cắt đi */
+    #dtmix-frame {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: calc(100dvh + 45px);
+      border: 0;
+      background: #ffffff;
+      display: block;
+    }
   </style>
 </head>
+
 <body>
-  <iframe id="dtmix-frame" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+
+  <div id="dtmix-wrap">
+    <iframe
+      id="dtmix-frame"
+      allow="clipboard-read; clipboard-write; fullscreen">
+    </iframe>
+  </div>
+
   <script>
     const STREAMLIT_APP = "https://dtmixonline.streamlit.app/";
     const SUPABASE_HOST = "hqkgkdszkngxtbrsadra.supabase.co";
 
-    // Khi Supabase trả code OAuth về tên miền DTMIX, chuyển các query parameters
-    // vào iframe Streamlit đúng một lần để app.py hoàn tất PKCE exchange.
+    // Khi Supabase trả code OAuth về tên miền DTMIX,
+    // chuyển các query parameters vào iframe Streamlit
+    // đúng một lần để app.py hoàn tất PKCE exchange.
     const params = window.location.search.replace(/^\?/, "");
+
     let src = STREAMLIT_APP + "?embed=true";
-    if (params) src += "&" + params;
-    document.getElementById("dtmix-frame").src = src;
 
     if (params) {
-      window.history.replaceState({}, document.title, window.location.pathname);
+      src += "&" + params;
     }
 
-    // Streamlit chạy trong iframe. Nút Google trong app gửi DTMIX_OAUTH_START lên đây.
-    // Điều hướng được thực hiện ở cửa sổ trên cùng nên Google/Supabase không bị chặn bởi iframe.
+    document.getElementById("dtmix-frame").src = src;
+
+    // Sau khi đã chuyển query parameter vào iframe,
+    // xóa query parameter khỏi thanh địa chỉ ngoài.
+    if (params) {
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+      );
+    }
+
+    // Streamlit chạy trong iframe.
+    // Nút đăng nhập Google trong app gửi DTMIX_OAUTH_START lên trang ngoài.
+    // Điều hướng được thực hiện ở cửa sổ trên cùng
+    // để Google/Supabase không bị chặn bởi iframe.
     window.addEventListener("message", (event) => {
       const data = event && event.data;
-      if (!data || data.type !== "DTMIX_OAUTH_START" || typeof data.url !== "string") return;
+
+      if (
+        !data ||
+        data.type !== "DTMIX_OAUTH_START" ||
+        typeof data.url !== "string"
+      ) {
+        return;
+      }
 
       try {
         const target = new URL(data.url);
+
         const valid =
           target.protocol === "https:" &&
           target.hostname === SUPABASE_HOST &&
           target.pathname.startsWith("/auth/v1/authorize");
 
-        if (!valid) return;
+        if (!valid) {
+          return;
+        }
+
         window.location.assign(target.toString());
+
       } catch (e) {
         // Bỏ qua URL không hợp lệ.
       }
     });
   </script>
+
 </body>
 </html>

@@ -13,31 +13,46 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #ffffff;
+      background: #f3f8fe;
     }
 
-    /* Khung ngoài chỉ hiển thị đúng phần màn hình */
+    /* Khung chứa Streamlit */
     #dtmix-wrap {
       position: fixed;
       inset: 0;
-      width: 100%;
-      height: 100%;
       overflow: hidden;
-      background: #ffffff;
+      background: #f3f8fe;
     }
 
-    /* Cho iframe cao hơn màn hình 45px
-       để thanh "Built with Streamlit / Fullscreen"
-       bị đẩy xuống dưới và bị khung ngoài cắt đi */
+    /* Streamlit chiếm toàn bộ màn hình */
     #dtmix-frame {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
-      height: calc(100dvh + 50px);
+      height: 100dvh;
       border: 0;
-      background: #ffffff;
+      background: #f3f8fe;
       display: block;
+    }
+
+    /*
+      CHE THANH:
+      "Built with Streamlit 🎈        Fullscreen"
+
+      Thanh này cao khoảng 55px.
+      Lớp này nằm BÊN NGOÀI iframe nên luôn che được.
+    */
+    #streamlit-bottom-mask {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 56px;
+      background: #f3f8fe;
+      z-index: 999999;
+      border: 0;
+      pointer-events: auto;
     }
   </style>
 </head>
@@ -51,15 +66,17 @@
     </iframe>
   </div>
 
+  <!-- Che hoàn toàn thanh Built with Streamlit / Fullscreen -->
+  <div id="streamlit-bottom-mask"></div>
+
   <script>
     const STREAMLIT_APP = "https://dtmixonline.streamlit.app/";
     const SUPABASE_HOST = "hqkgkdszkngxtbrsadra.supabase.co";
 
-    // Khi Supabase trả code OAuth về tên miền DTMIX,
-    // chuyển các query parameters vào iframe Streamlit
-    // đúng một lần để app.py hoàn tất PKCE exchange.
+    // Nhận query parameters do Supabase trả về
     const params = window.location.search.replace(/^\?/, "");
 
+    // Chạy Streamlit ở chế độ embed
     let src = STREAMLIT_APP + "?embed=true";
 
     if (params) {
@@ -68,8 +85,8 @@
 
     document.getElementById("dtmix-frame").src = src;
 
-    // Sau khi đã chuyển query parameter vào iframe,
-    // xóa query parameter khỏi thanh địa chỉ ngoài.
+    // Xóa query parameters khỏi thanh địa chỉ
+    // sau khi đã chuyển chúng vào Streamlit.
     if (params) {
       window.history.replaceState(
         {},
@@ -79,9 +96,8 @@
     }
 
     // Streamlit chạy trong iframe.
-    // Nút đăng nhập Google trong app gửi DTMIX_OAUTH_START lên trang ngoài.
-    // Điều hướng được thực hiện ở cửa sổ trên cùng
-    // để Google/Supabase không bị chặn bởi iframe.
+    // Khi người dùng bấm đăng nhập Google,
+    // app gửi DTMIX_OAUTH_START lên trang ngoài.
     window.addEventListener("message", (event) => {
       const data = event && event.data;
 
